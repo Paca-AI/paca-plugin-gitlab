@@ -1,4 +1,4 @@
-# com.paca.gitlab
+# com.gorlix.gitlab
 
 First-party Paca plugin that integrates **GitLab projects**, **merge requests**, and **branches** with Paca projects and tasks.
 
@@ -7,8 +7,8 @@ First-party Paca plugin that integrates **GitLab projects**, **merge requests**,
 
 | | |
 |---|---|
-| **Plugin ID** | `com.paca.gitlab` |
-| **Release Version** | [`v0.5.1`](https://github.com/gorlix/paca-plugin-gitlab/releases/tag/v0.5.1) |
+| **Plugin ID** | `com.gorlix.gitlab` |
+| **Release Version** | [`v0.5.2`](https://github.com/gorlix/paca-plugin-gitlab/releases/tag/v0.5.2) |
 | **Minimum Paca Version** | `minCoreVersion` **v0.13.3** (declared in `plugin.json`) |
 | **Minimum GitLab Version** | **19+** (Standard Webhooks with HMAC `signing_token`) |
 | **UI Localization** | **en** + **it** |
@@ -34,8 +34,8 @@ gitlab/
 ### Backend (`backend/`)
 
 - Written in Go, compiled to `wasip1/wasm` for production.
-- Registered as `com.paca.gitlab` in the plugin registry.
-- Owns its database schema (`plugin_data_com_paca_gitlab`) and runs its own migrations on startup (`0001_create_gitlab_tables.sql`).
+- Registered as `com.gorlix.gitlab` in the plugin registry.
+- Owns its database schema (`plugin_data_com_gorlix_gitlab`) and runs its own migrations on startup (`0001_create_gitlab_tables.sql`).
 - Stores GitLab access tokens and webhook signing tokens encrypted with AES-256-GCM.
 - Creates and verifies GitLab project webhooks for linked repositories using HMAC Standard Webhooks signatures.
 - Handles task/project cleanup on `task.deleted` and `project.deleted` events.
@@ -43,12 +43,12 @@ gitlab/
 ### Frontend (`frontend/`)
 
 - Built with Vite + React 19 + TanStack Query + Lucide icons.
-- Exposed as a Module Federation remote (`com_paca_gitlab`).
+- Exposed as a Module Federation remote (`com_gorlix_gitlab`).
 - Mounted at:
   - `project.settings.tab` (`GitLabSettingsTab`, required permission: `gitlab.manage`)
   - `task.detail.section` (`GitLabTaskSection`)
 - Internationalization support with complete English (`en`) and Italian (`it`) catalogs.
-- Communicates with the backend via plugin API routes under `/api/v1/plugins/com.paca.gitlab/projects/:projectId/...`.
+- Communicates with the backend via plugin API routes under `/api/v1/plugins/com.gorlix.gitlab/projects/:projectId/...`.
 
 ### MCP (`mcp/`)
 
@@ -180,7 +180,7 @@ Current behavior includes:
 
 ## Database Schema
 
-Tables live in `plugin_data_com_paca_gitlab` and are created by `backend/migrations/0001_create_gitlab_tables.sql`:
+Tables live in `plugin_data_com_gorlix_gitlab` and are created by `backend/migrations/0001_create_gitlab_tables.sql`:
 
 ```text
 gitlab_integrations
@@ -244,7 +244,7 @@ gitlab_task_branches
 
 ## Differences Compared to the GitHub Plugin
 
-| Feature | GitHub (`com.paca.github`) | GitLab (`com.paca.gitlab`) |
+| Feature | GitHub (`com.paca.github`) | GitLab (`com.gorlix.gitlab`) |
 |---|---|---|
 | **Primary Object** | Pull Request | Merge Request (`iid`) |
 | **Authentication** | Personal Access Token (PAT) | Personal, Project, or Group Access Token |
@@ -260,7 +260,7 @@ gitlab_task_branches
 
 ### Method 1: Marketplace UI (Recommended once listed)
 
-Once approved in the official Paca marketplace catalog (see [Paca-AI/paca-plugins #34](https://github.com/Paca-AI/paca-plugins/pull/34)), administrators can install `com.paca.gitlab` with one click from the Paca Web Admin under **Admin → Plugins**.
+Once approved in the official Paca marketplace catalog (see [Paca-AI/paca-plugins #34](https://github.com/Paca-AI/paca-plugins/pull/34)), administrators can install `com.gorlix.gitlab` with one click from the Paca Web Admin under **Admin → Plugins**.
 
 ---
 
@@ -293,7 +293,7 @@ export PACA_API_KEY='your-admin-api-key'
 ./scripts/install-from-release.sh \
   --api-url "$PACA_URL" \
   --api-key "$PACA_API_KEY" \
-  --version v0.5.1
+  --version v0.5.2
 ```
 
 The script verifies SHA256 checksums, populates the `paca_*_plugins` volumes, and registers/updates the plugin via `POST/PATCH /api/v1/admin/plugins`.
@@ -301,8 +301,8 @@ The script verifies SHA256 checksums, populates the `paca_*_plugins` volumes, an
 #### 3. Manual Step-by-Step Install
 
 ```bash
-PLUGIN_ID="com.paca.gitlab"
-VERSION="v0.5.1"
+PLUGIN_ID="com.gorlix.gitlab"
+VERSION="v0.5.2"
 BASE="https://github.com/gorlix/paca-plugin-gitlab/releases/download/${VERSION}"
 WORKDIR=$(mktemp -d)
 cd "$WORKDIR"
@@ -396,11 +396,11 @@ If UI assets do not render immediately, run `docker compose restart api gateway`
 |---------|------------------|
 | `PLUGIN_INCOMPATIBLE_HOST_VERSION` | Paca server version is below `minCoreVersion`. Upgrade Paca to ≥ `v0.13.3`. |
 | Admin API returns 401/403 | Verify that the API key has administrative permissions and is passed in the `X-API-Key` header. |
-| Admin API 500 on migrations/load | Ensure `backend.wasm` and `migrations/*.sql` exist in `/plugins/com.paca.gitlab/`. Check `api` container logs. |
+| Admin API 500 on migrations/load | Ensure `backend.wasm` and `migrations/*.sql` exist in `/plugins/com.gorlix.gitlab/`. Check `api` container logs. |
 | Repository link fails / webhook error | Verify `PUBLIC_URL` is reachable from GitLab via HTTPS. Verify the token has `api` scope and Maintainer/Owner permissions. |
 | Tokens fail after database restore | `ENCRYPTION_KEY` changed after the secrets were encrypted. Reconnect the tokens in project settings. |
 | Empty / short list of accessible projects | Project/Group tokens have restricted scope and only see their designated project/group. |
-| Plugin UI does not render | Check that `remoteEntry.js` exists in `/plugins-frontend/com.paca.gitlab/assets/`. Run `docker compose restart gateway` and hard-refresh your browser. |
+| Plugin UI does not render | Check that `remoteEntry.js` exists in `/plugins-frontend/com.gorlix.gitlab/assets/`. Run `docker compose restart gateway` and hard-refresh your browser. |
 | Outbound requests fail on Self-Managed | For non-gitlab.com hosts, add the instance hostname to `allowedOutboundDomains` in `plugin.json`. |
 | Webhook signature verification failed | GitLab version is older than 19 or hook was manually created without a signing token. Relink the repository via the plugin UI. |
 
@@ -461,7 +461,7 @@ To install directly into a local development Paca instance, use Paca's developme
 The release workflow is located at [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 It triggers on:
-- Tag pushes matching `v*` (e.g. `v0.5.1`).
+- Tag pushes matching `v*` (e.g. `v0.5.2`).
 - Manual `workflow_dispatch`.
 
 The workflow builds backend WASM, frontend, and MCP bundles, packages migrations, skills, and `plugin.json`, generates `checksums.txt`, and publishes all `.tar.gz` assets to a GitHub Release.

@@ -13,7 +13,7 @@ import (
 // ctx.Action. Node types must match exactly what's declared in plugin.json
 // under "automation" (see AutomationManifest in the core's
 // domain/plugin/entity.go) — namespaced under the plugin's short name,
-// "github" (the last dot-separated segment of the plugin ID "com.paca.gitlab"),
+// "gitlab" (the last dot-separated segment of the plugin ID "com.gorlix.gitlab"),
 // not the full reverse-DNS ID.
 //
 // Both handlers resolve the calling project from req.ProjectID — supplied

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install com.paca.gitlab from a GitHub Release into a production Paca stack.
+# Install com.gorlix.gitlab from a GitHub Release into a production Paca stack.
 #
 # Populates Docker named volumes (compose project "paca") and registers the
 # plugin via POST/PATCH /api/v1/admin/plugins. The Paca API then runs
@@ -11,14 +11,14 @@
 #   ./scripts/install-from-release.sh \
 #     --api-url https://paca.example.com \
 #     --api-key "$PACA_API_KEY" \
-#     [--version v0.5.1] \
+#     [--version v0.5.2] \
 #     [--compose-project paca]
 #
 set -euo pipefail
 
-PLUGIN_ID="com.paca.gitlab"
+PLUGIN_ID="com.gorlix.gitlab"
 REPO="gorlix/paca-plugin-gitlab"
-VERSION="v0.5.1"
+VERSION="v0.5.2"
 COMPOSE_PROJECT="paca"
 API_URL="${PACA_URL:-}"
 API_KEY="${PACA_API_KEY:-}"

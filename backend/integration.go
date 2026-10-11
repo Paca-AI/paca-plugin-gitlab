@@ -57,7 +57,7 @@ type repoCloneInfo struct {
 	ExpiresAt float64 `json:"expires_at"`
 }
 
-const gitlabPluginID = "com.paca.gitlab"
+const gitlabPluginID = "com.gorlix.gitlab"
 
 func webhookURLFromPublicURL(cfg *plugin.Config, projectID string) (string, error) {
 	publicURL, ok := cfg.Get("PUBLIC_URL")

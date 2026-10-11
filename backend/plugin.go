@@ -1,4 +1,4 @@
-// Package main implements the com.paca.gitlab backend WASM plugin.
+// Package main implements the com.gorlix.gitlab backend WASM plugin.
 //
 // It manages GitLab integration for projects: PAT storage, repository linking
 // with automatic webhook creation, pull-request caching, branch creation, and

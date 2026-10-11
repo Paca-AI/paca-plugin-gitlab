@@ -1,6 +1,6 @@
 import { type PluginApiClient } from "@paca-ai/plugin-sdk-react";
 
-const PLUGIN_ID = "com.paca.gitlab";
+const PLUGIN_ID = "com.gorlix.gitlab";
 
 // ── Error codes ────────────────────────────────────────────────────────────────
 

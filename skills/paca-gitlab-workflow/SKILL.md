@@ -1,6 +1,6 @@
 ---
 name: paca-gitlab-workflow
-description: Link a GitLab repository to a Paca project, create branches, open and manage merge requests, review PRs, and check CI status — using the com.paca.gitlab plugin's tools. Use when asked to open a merge request, create a branch, link a merge request to a task, review or comment on a PR, or check CI/build status for a task.
+description: Link a GitLab repository to a Paca project, create branches, open and manage merge requests, review PRs, and check CI status — using the com.gorlix.gitlab plugin's tools. Use when asked to open a merge request, create a branch, link a merge request to a task, review or comment on a PR, or check CI/build status for a task.
 triggers:
   - /paca-gitlab-workflow
   - create a merge request
@@ -13,14 +13,14 @@ triggers:
 
 # GitLab Workflow Skill
 
-This plugin (`com.paca.gitlab`) connects a Paca project to GitLab via a Personal Access Token (PAT) — not a GitLab App — and links repositories, branches, and merge requests to individual tasks. All GitLab API calls happen server-side; you only ever call this plugin's tools.
+This plugin (`com.gorlix.gitlab`) connects a Paca project to GitLab via a Personal Access Token (PAT) — not a GitLab App — and links repositories, branches, and merge requests to individual tasks. All GitLab API calls happen server-side; you only ever call this plugin's tools.
 
 ## Prerequisites — check before doing anything else
 
 1. `gitlab_get_integration({projectId})`. If `connected` is false, a GitLab PAT must be connected first (scopes `api` (Maintainer/Owner to manage webhooks)) — you cannot mint one yourself. Tell the user to add it under Project Settings → GitLab, or, if they give you a token directly in the conversation, call `gitlab_set_token({projectId, token})` yourself.
 2. `gitlab_list_linked_repos({projectId})`. If empty and you already know the exact `owner`/`repo_name`, call `gitlab_link_repository({projectId, owner, repo_name})` — this also creates the required webhook automatically. If you don't know the exact owner/repo name, ask the user; there's no tool to browse "which repos can this token see" (that picker is UI-only).
 
-Every branch/PR tool below 404s (`GITHUB_INTEGRATION_NOT_FOUND` / `GITHUB_REPOSITORY_NOT_FOUND`) until both of these are satisfied.
+Every branch/PR tool below 404s (`GITLAB_INTEGRATION_NOT_FOUND` / `GITLAB_REPOSITORY_NOT_FOUND`) until both of these are satisfied.
 
 ## Tools
 

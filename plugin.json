@@ -1,8 +1,8 @@
 {
-  "id": "com.paca.gitlab",
+  "id": "com.gorlix.gitlab",
   "displayName": "GitLab Integration",
   "description": "Integrates GitLab projects, merge requests, and branches with Paca projects and tasks.",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "minCoreVersion": "v0.13.3",
   "capabilities": ["repository"],
   "permissions": ["db.read", "db.write"],
@@ -277,7 +277,7 @@
     ]
   },
   "frontend": {
-    "remoteEntryUrl": "/plugins/com.paca.gitlab/assets/remoteEntry.js",
+    "remoteEntryUrl": "/plugins/com.gorlix.gitlab/assets/remoteEntry.js",
     "extensionPoints": [
       {
         "point": "project.settings.tab",
@@ -358,11 +358,11 @@
     ]
   },
   "mcp": {
-    "remoteEntryUrl": "/plugins-mcp/com.paca.gitlab/mcp.js",
+    "remoteEntryUrl": "/plugins-mcp/com.gorlix.gitlab/mcp.js",
     "toolContextHooks": ["get_task"]
   },
   "skills": {
-    "baseUrl": "/plugins-skills/com.paca.gitlab",
+    "baseUrl": "/plugins-skills/com.gorlix.gitlab",
     "names": ["paca-gitlab-workflow"]
   }
 }

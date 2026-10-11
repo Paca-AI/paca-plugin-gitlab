@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [
     react(),
     federation({
-      name: "com_paca_gitlab",
+      name: "com_gorlix_gitlab",
       filename: "remoteEntry.js",
       exposes: {
         "./GitLabSettingsTab": "./src/GitLabSettingsTab.tsx",
