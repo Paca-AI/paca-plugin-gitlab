@@ -13,8 +13,15 @@ import (
 	plugin "github.com/Paca-AI/plugin-sdk-go"
 )
 
-// branchTaskRefRe matches a task-ID prefix in a branch name (e.g. "PROJ-42").
-var branchTaskRefRe = regexp.MustCompile(`(?i)\b([A-Z][A-Z0-9]{1,19})-(\d{1,6})\b`)
+// Branch task-ref patterns (path-segment aware, matches UI CreateBranch names):
+//   feat/PROJ-42-slug  /  PROJ-42
+//   feat/PROJ/42-slug  /  PROJ/42
+//   feat/42-slug       /  feat/42   (number-only when project has no task_id_prefix)
+var (
+	branchTaskRefHyphenRe     = regexp.MustCompile(`(?i)(?:^|/)([A-Z][A-Z0-9]{1,19})-(\d{1,6})(?:-|/|$)`)
+	branchTaskRefSlashRe      = regexp.MustCompile(`(?i)(?:^|/)([A-Z][A-Z0-9]{1,19})/(\d{1,6})(?:-|/|$)`)
+	branchTaskRefNumberOnlyRe = regexp.MustCompile(`(?i)(?:^|/)(\d{1,6})(?:-|$)`)
+)
 
 // ─── POST /webhook ────────────────────────────────────────────────────────────
 
@@ -219,37 +226,28 @@ func (p *gitlabPlugin) handlePushEvent(repoID, projectID string, payload []byte)
 		Ref     string `json:"ref"`
 		Before  string `json:"before"`
 		After   string `json:"after"`
-		Created bool   `json:"created"` // not always present on GitLab
+		Created bool   `json:"created"` // GitHub-style; GitLab usually omits this
 	}
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return nil
 	}
 	branchName := strings.TrimPrefix(event.Ref, "refs/heads/")
 	if branchName == event.Ref {
-		return nil
+		return nil // not a branch ref (e.g. tag)
 	}
-	// GitLab signals new branch with before = 40 zeros (or omitted created).
-	isCreated := event.Created || event.Before == "" || event.Before == strings.Repeat("0", 40)
-	isDeleted := event.After == strings.Repeat("0", 40)
-	if !isCreated || isDeleted {
+	if !isNewBranchPush(event.Created, event.Before, event.After) {
 		return nil
 	}
 
-	prefix, taskNumber, ok := extractBranchTaskRef(branchName)
+	refPrefix, taskNumber, ok := extractBranchTaskRef(branchName)
 	if !ok {
 		return nil
 	}
 
-	taskResult, tErr := p.db.Query(`
-		SELECT t.id FROM tasks t
-		JOIN projects pr ON pr.id = t.project_id
-		WHERE UPPER(pr.task_id_prefix) = UPPER($1) AND t.task_number = $2
-		LIMIT 1
-	`, prefix, taskNumber)
-	if tErr != nil || len(taskResult.Rows) == 0 {
+	taskID, found := p.resolveTaskForBranchRef(projectID, refPrefix, taskNumber)
+	if !found {
 		return nil
 	}
-	taskID := newRowScanner(taskResult.Columns, taskResult.Rows[0]).str("id")
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = p.db.Exec(`
@@ -264,7 +262,47 @@ func (p *gitlabPlugin) handlePushEvent(repoID, projectID string, payload []byte)
 		"repo_id":     repoID,
 		"branch_name": branchName,
 	})
+	p.log.Info("gitlab: branch auto-linked to task, task_id=" + taskID + ", branch=" + branchName)
 	return nil
+}
+
+// isNewBranchPush detects a newly created branch on push.
+// GitLab sends before = 40 zero hex chars; GitHub may set created=true.
+func isNewBranchPush(created bool, before, after string) bool {
+	zeroSHA := strings.Repeat("0", 40)
+	isDeleted := after == zeroSHA
+	isCreated := created || before == "" || before == zeroSHA
+	return isCreated && !isDeleted
+}
+
+// resolveTaskForBranchRef finds a task in projectID matching the branch ref.
+// Prefixed refs (PROJ-1 / PROJ/1) require the project's task_id_prefix to match.
+// Number-only refs (feat/1-slug) are allowed only when the project has an empty prefix.
+func (p *gitlabPlugin) resolveTaskForBranchRef(projectID, refPrefix string, taskNumber int64) (taskID string, ok bool) {
+	prefixResult, err := p.db.Query(`SELECT task_id_prefix FROM projects WHERE id = $1`, projectID)
+	if err != nil || len(prefixResult.Rows) == 0 {
+		return "", false
+	}
+	projectPrefix := strings.TrimSpace(newRowScanner(prefixResult.Columns, prefixResult.Rows[0]).str("task_id_prefix"))
+
+	if refPrefix != "" {
+		if projectPrefix == "" || !strings.EqualFold(refPrefix, projectPrefix) {
+			return "", false
+		}
+	} else if projectPrefix != "" {
+		// Number-only branch, but project uses a prefix — ignore (matches UI).
+		return "", false
+	}
+
+	taskResult, tErr := p.db.Query(`
+		SELECT id FROM tasks
+		WHERE project_id = $1 AND task_number = $2 AND deleted_at IS NULL
+		LIMIT 1
+	`, projectID, taskNumber)
+	if tErr != nil || len(taskResult.Rows) == 0 {
+		return "", false
+	}
+	return newRowScanner(taskResult.Columns, taskResult.Rows[0]).str("id"), true
 }
 
 // verifyGitLabSigningToken validates Standard Webhooks HMAC (GitLab 19+ signing_token).
@@ -308,16 +346,45 @@ func extractGitLabProjectPath(payload []byte) string {
 	return v.Repository.PathWithNamespace
 }
 
+// conventionalBranchTypes are gitflow-style path segments, not Paca task prefixes.
+// Needed so "feat/1-slug" is number-only, not prefix=FEAT via the slash form.
+var conventionalBranchTypes = map[string]struct{}{
+	"feat": {}, "feature": {}, "fix": {}, "bugfix": {}, "chore": {},
+	"docs": {}, "doc": {}, "refactor": {}, "style": {}, "test": {},
+	"tests": {}, "ci": {}, "build": {}, "perf": {}, "revert": {},
+	"hotfix": {}, "release": {}, "wip": {},
+}
+
+func isConventionalBranchType(s string) bool {
+	_, ok := conventionalBranchTypes[strings.ToLower(s)]
+	return ok
+}
+
+// extractBranchTaskRef parses a Paca task reference from a git branch name.
+// Returns prefix="" for number-only branches (used when project has no task_id_prefix).
 func extractBranchTaskRef(branchName string) (prefix string, taskNumber int64, ok bool) {
-	m := branchTaskRefRe.FindStringSubmatch(branchName)
-	if m == nil {
-		return "", 0, false
+	if m := branchTaskRefHyphenRe.FindStringSubmatch(branchName); m != nil {
+		n, err := strconv.ParseInt(m[2], 10, 64)
+		if err == nil && n > 0 {
+			return strings.ToUpper(m[1]), n, true
+		}
 	}
-	n, err := strconv.ParseInt(m[2], 10, 64)
-	if err != nil || n <= 0 {
-		return "", 0, false
+	for _, m := range branchTaskRefSlashRe.FindAllStringSubmatch(branchName, -1) {
+		if isConventionalBranchType(m[1]) {
+			continue
+		}
+		n, err := strconv.ParseInt(m[2], 10, 64)
+		if err == nil && n > 0 {
+			return strings.ToUpper(m[1]), n, true
+		}
 	}
-	return strings.ToUpper(m[1]), n, true
+	if m := branchTaskRefNumberOnlyRe.FindStringSubmatch(branchName); m != nil {
+		n, err := strconv.ParseInt(m[1], 10, 64)
+		if err == nil && n > 0 {
+			return "", n, true
+		}
+	}
+	return "", 0, false
 }
 
 func normalizeMRState(state string, merged bool) string {
