@@ -1,8 +1,9 @@
 # com.paca.gitlab
 
-First-party Paca plugin connecting **GitLab projects**, **merge requests**, and **branches** to Paca projects and tasks.
+First-party Paca plugin that integrates **GitLab projects**, **merge requests**, and **branches** with Paca projects and tasks.
 
-The source code and releases are hosted on [GitHub](https://github.com/gorlix/paca-plugin-gitlab); the plugin communicates with **GitLab.com** (and Self-Managed GitLab instances via `instance_url`).
+> [!NOTE]
+> **Lineage & Upstream Base:** This plugin is based on and ported from the official GitHub integration plugin ([`Paca-AI/paca-plugin-github`](https://github.com/Paca-AI/paca-plugin-github)). It retains the same architectural patterns, database isolation, and lifecycle handling while adapting authentication, webhook signatures, and data models to GitLab.com and Self-Managed GitLab instances.
 
 | | |
 |---|---|
@@ -11,19 +12,247 @@ The source code and releases are hosted on [GitHub](https://github.com/gorlix/pa
 | **Minimum Paca Version** | `minCoreVersion` **v0.13.3** (declared in `plugin.json`) |
 | **Minimum GitLab Version** | **19+** (Standard Webhooks with HMAC `signing_token`) |
 | **UI Localization** | **en** + **it** |
+| **Upstream Base** | [`com.paca.github`](https://github.com/Paca-AI/paca-plugin-github) |
 
 Reference GitLab documentation: [docs.gitlab.com](https://docs.gitlab.com/) · [REST API](https://docs.gitlab.com/ee/api/rest/) · [Project webhooks](https://docs.gitlab.com/user/project/integrations/webhooks/) · [Access token scopes](https://docs.gitlab.com/security/tokens/access_token_scopes/) · [Official MCP server](https://docs.gitlab.com/user/model_context_protocol/mcp_server/)
 
 ---
 
-## Features
+## Architecture
 
-- **Encrypted Token Storage**: Stores an AES-256-GCM encrypted GitLab access token per Paca project.
-- **Repository Linking**: Lists and links GitLab projects accessible by the token.
-- **Automated Webhooks**: Creates project webhooks for push, merge request, and pipeline events.
-- **Task Integration**: Link/create branches and merge requests directly on Paca tasks; view CI pipeline status, add comments, and submit reviews (approvals).
-- **Automations**: Exposes automation triggers, conditions, and actions (`gitlab.mr_linked`, `gitlab.mr_state`, `gitlab.merge_mr`, `gitlab.comment_mr`, `gitlab.branch_linked`).
-- **AI Agent Skill & MCP**: Bundles MCP tools and the `paca-gitlab-workflow` skill centered on Paca task linking (does not replace the [official GitLab MCP](https://docs.gitlab.com/user/model_context_protocol/mcp_server/)).
+The plugin follows the standard Paca plugin structure:
+
+```text
+gitlab/
+├── backend/   - Go WASM plugin (runs inside the API host)
+├── frontend/  - React micro-frontend (Module Federation remote)
+├── mcp/       - MCP tools bundle for AI/tooling integrations
+├── skills/    - Agent skills bundle (paca-gitlab-workflow)
+└── scripts/   - Production install automation helper
+```
+
+### Backend (`backend/`)
+
+- Written in Go, compiled to `wasip1/wasm` for production.
+- Registered as `com.paca.gitlab` in the plugin registry.
+- Owns its database schema (`plugin_data_com_paca_gitlab`) and runs its own migrations on startup (`0001_create_gitlab_tables.sql`).
+- Stores GitLab access tokens and webhook signing tokens encrypted with AES-256-GCM.
+- Creates and verifies GitLab project webhooks for linked repositories using HMAC Standard Webhooks signatures.
+- Handles task/project cleanup on `task.deleted` and `project.deleted` events.
+
+### Frontend (`frontend/`)
+
+- Built with Vite + React 19 + TanStack Query + Lucide icons.
+- Exposed as a Module Federation remote (`com_paca_gitlab`).
+- Mounted at:
+  - `project.settings.tab` (`GitLabSettingsTab`, required permission: `gitlab.manage`)
+  - `task.detail.section` (`GitLabTaskSection`)
+- Internationalization support with complete English (`en`) and Italian (`it`) catalogs.
+- Communicates with the backend via plugin API routes under `/api/v1/plugins/com.paca.gitlab/projects/:projectId/...`.
+
+### MCP (`mcp/`)
+
+- Built with `@paca-ai/plugin-sdk-mcp`.
+- Published as an ESM bundle (`mcp.js`).
+- Exposes tools for integration management, repository linking, MR linking, reviews/comments, and branch operations.
+
+### Skills (`skills/`)
+
+- Bundles the `paca-gitlab-workflow` skill (`skills/paca-gitlab-workflow/SKILL.md`), enabling AI agents (e.g. Claude Code, AGY) to interact with GitLab within Paca workflows.
+
+---
+
+## Required Configuration
+
+The backend uses the following host configuration keys:
+
+- `ENCRYPTION_KEY`: 64 hex characters (32-byte key) used for AES-256-GCM encryption of tokens and secrets.
+- `PUBLIC_URL`: Public base URL of the Paca server without trailing slash (e.g. `https://paca.example.com`), used to construct the webhook callback URL.
+
+Without `PUBLIC_URL`, linking repositories will fail because GitLab webhook creation requires a reachable callback endpoint.
+
+---
+
+## API Endpoints
+
+All routes are prefixed with `/projects/:projectId` by the host.  
+The caller must be an authenticated member of the project with appropriate permissions.
+
+| Method | Path | Description | Required Permission |
+|--------|------|-------------|---------------------|
+| GET | `/integration` | Get GitLab integration status for the project | `gitlab.manage` |
+| POST | `/integration/token` | Set or replace GitLab access token | `gitlab.manage` |
+| DELETE | `/integration/token` | Disconnect GitLab integration and delete token | `gitlab.manage` |
+| GET | `/integration/accessible-repos` | List repositories accessible by the token | `gitlab.manage` |
+| GET | `/repositories` | List repositories linked to the project | `gitlab.manage` |
+| POST | `/repositories` | Link a repository and create project webhook | `gitlab.manage` |
+| DELETE | `/repositories/:repoId` | Unlink a repository and delete webhook | `gitlab.manage` |
+| GET | `/repositories/:repoId/clone-info` | Get repository clone URLs (HTTPS/SSH) | `gitlab.manage` |
+| GET | `/tasks/:taskId/pull-requests` | List merge requests linked to a task | `tasks.read` |
+| POST | `/tasks/:taskId/pull-requests` | Create a new merge request and link to task | `tasks.write` |
+| POST | `/tasks/:taskId/pull-requests/link` | Link an existing merge request to a task | `tasks.write` |
+| DELETE | `/tasks/:taskId/pull-requests/:prId` | Unlink a merge request from a task | `tasks.write` |
+| GET | `/tasks/:taskId/pull-requests/:prId` | Get merge request details and diff | `tasks.read` |
+| GET | `/tasks/:taskId/pull-requests/:prId/ci-status` | Get MR pipeline CI status | `tasks.read` |
+| POST | `/tasks/:taskId/pull-requests/:prId/comments` | Post a comment / note to the MR | `tasks.write` |
+| POST | `/tasks/:taskId/pull-requests/:prId/reviews` | Submit an MR review / approval | `tasks.write` |
+| GET | `/tasks/:taskId/branches` | List branches linked to a task | `tasks.read` |
+| POST | `/tasks/:taskId/branches` | Create a new branch and link it to task | `tasks.write` |
+| POST | `/tasks/:taskId/branches/link` | Link an existing branch to a task | `tasks.write` |
+| POST | `/webhook` (public) | Inbound GitLab webhook receiver | None (HMAC signature) |
+
+### Example Requests
+
+**Set token:**
+```json
+{
+  "token": "glpat-xxxxxxxxxxxxxxxxxxxx",
+  "instance_url": "https://gitlab.com",
+  "token_kind": "personal"
+}
+```
+*(Token kinds supported: `"personal"`, `"project"`, `"group"`)*
+
+**Link repository:**
+```json
+{
+  "owner": "my-org",
+  "repo_name": "my-service"
+}
+```
+
+**Link MR to task:**
+```json
+{
+  "repo_id": "550e8400-e29b-41d4-a716-446655440000",
+  "pr_number": 42
+}
+```
+
+**Create branch for task:**
+```json
+{
+  "repo_id": "550e8400-e29b-41d4-a716-446655440000",
+  "branch_name": "feat/PROJ-42-gitlab-integration",
+  "source_branch": "main"
+}
+```
+
+**Post comment to MR:**
+```json
+{
+  "body": "Automated review feedback from Paca."
+}
+```
+
+**Submit review / approval:**
+```json
+{
+  "event": "APPROVE",
+  "body": "Looks good to me!"
+}
+```
+*(Review events supported: `"APPROVE"`, `"REQUEST_CHANGES"`, `"COMMENT"`)*
+
+---
+
+## Webhook Behavior
+
+On linked repositories, GitLab project webhooks are configured for:
+
+- `push_events`
+- `merge_requests_events`
+- `pipeline_events`
+
+Current behavior includes:
+
+- **Verification**: Validates HMAC signatures using Standard Webhooks headers (`webhook-signature`, `webhook-timestamp`, `webhook-id`, `X-Gitlab-Event`) against the stored `signing_token` (`whsec_...`).
+- **State Caching**: Caches and updates merge request state and metadata in the plugin database.
+- **Auto-linking MRs**: Automatically links merge requests when opened or reopened from a branch already associated with a task.
+- **Auto-linking Branches**: Automatically associates pushed branches matching task keys (e.g. `PROJ-42`, `feat/PROJ-42`, `feat/PROJ/42`, or plain number `42`).
+- **Pipeline CI Status**: Real-time pipeline status tracking for linked merge requests.
+- **Emitting Plugin Events**:
+  - `gitlab.mr_linked`
+  - `gitlab.mr_state_changed`
+  - `gitlab.branch_linked`
+
+---
+
+## Database Schema
+
+Tables live in `plugin_data_com_paca_gitlab` and are created by `backend/migrations/0001_create_gitlab_tables.sql`:
+
+```text
+gitlab_integrations
+  id UUID PK
+  project_id UUID UNIQUE -> projects(id) ON DELETE CASCADE
+  access_token_enc TEXT
+  instance_url TEXT NOT NULL DEFAULT 'https://gitlab.com'
+  token_kind TEXT NOT NULL DEFAULT 'personal'  -- personal | project | group
+  created_at TIMESTAMPTZ
+  updated_at TIMESTAMPTZ
+
+gitlab_repositories
+  id UUID PK
+  project_id UUID -> projects(id) ON DELETE CASCADE
+  integration_id UUID -> gitlab_integrations(id) ON DELETE CASCADE
+  owner TEXT
+  repo_name TEXT
+  full_name TEXT                              -- path_with_namespace
+  gitlab_project_id BIGINT
+  webhook_id BIGINT
+  webhook_secret_enc TEXT                     -- signing_token (whsec_...)
+  default_branch TEXT NOT NULL DEFAULT 'main'
+  created_at TIMESTAMPTZ
+  updated_at TIMESTAMPTZ
+  UNIQUE (project_id, full_name)
+
+gitlab_merge_requests
+  id UUID PK
+  project_id UUID -> projects(id) ON DELETE CASCADE
+  repo_id UUID -> gitlab_repositories(id) ON DELETE CASCADE
+  pr_number INT                               -- GitLab MR iid (project-scoped)
+  gitlab_mr_id BIGINT
+  title TEXT
+  state TEXT                                  -- open | merged | closed
+  html_url TEXT
+  head_branch TEXT
+  base_branch TEXT
+  author TEXT
+  merged_at TIMESTAMPTZ
+  created_at TIMESTAMPTZ
+  updated_at TIMESTAMPTZ
+  UNIQUE (repo_id, pr_number)
+
+gitlab_task_mr_links
+  id UUID PK
+  task_id UUID -> tasks(id) ON DELETE CASCADE
+  merge_request_id UUID -> gitlab_merge_requests(id) ON DELETE CASCADE
+  created_at TIMESTAMPTZ
+  UNIQUE (task_id, merge_request_id)
+
+gitlab_task_branches
+  id UUID PK
+  task_id UUID -> tasks(id) ON DELETE CASCADE
+  repo_id UUID -> gitlab_repositories(id) ON DELETE CASCADE
+  branch_name TEXT
+  created_at TIMESTAMPTZ
+  UNIQUE (task_id, repo_id, branch_name)
+```
+
+---
+
+## Differences Compared to the GitHub Plugin
+
+| Feature | GitHub (`com.paca.github`) | GitLab (`com.paca.gitlab`) |
+|---|---|---|
+| **Primary Object** | Pull Request | Merge Request (`iid`) |
+| **Authentication** | Personal Access Token (PAT) | Personal, Project, or Group Access Token |
+| **API Host** | Fixed `api.github.com` | `instance_url` (defaults to `https://gitlab.com`) |
+| **Webhook Verification** | `X-Hub-Signature-256` | Standard Webhooks HMAC `signing_token` (GitLab **19+**) |
+| **CI Integration** | Checks / Commit statuses | Merge Request Pipelines |
+| **Reviews & Approvals** | Pull Request Reviews | Notes + Approvals API (`APPROVE`, `REQUEST_CHANGES`, `COMMENT`) |
+| **UI Localization** | English | **en** + **it** |
 
 ---
 
@@ -31,33 +260,22 @@ Reference GitLab documentation: [docs.gitlab.com](https://docs.gitlab.com/) · [
 
 ### Method 1: Marketplace UI (Recommended once listed)
 
-Once published in the public Paca plugin marketplace catalog (see [Paca-AI/paca-plugins #34](https://github.com/Paca-AI/paca-plugins/pull/34)), administrators can install `com.paca.gitlab` directly with one click from the Paca Web Admin under **Admin → Plugins**.
+Once approved in the official Paca marketplace catalog (see [Paca-AI/paca-plugins #34](https://github.com/Paca-AI/paca-plugins/pull/34)), administrators can install `com.paca.gitlab` with one click from the Paca Web Admin under **Admin → Plugins**.
 
 ---
 
 ### Method 2: Self-Hosted Release Install
 
-For self-hosted Docker Compose deployments installing directly from GitHub Release assets:
+For self-hosted Docker Compose deployments installing directly from GitHub Releases:
 
 #### 1. Host Prerequisites
 
-| Prerequisite | Purpose |
-|--------------|---------|
-| Paca **≥ v0.13.3** | Required by `minCoreVersion` in `plugin.json` |
-| `ENCRYPTION_KEY` | 64 hex characters (AES-256-GCM) — encrypts GitLab tokens and webhook signing tokens. Generate via `openssl rand -hex 32`. **Do not change** after storing tokens. |
-| `PUBLIC_URL` | Public HTTPS URL of Paca without trailing slash (e.g. `https://paca.example.com`), reachable by GitLab for webhook delivery. |
-| Admin API Key | API key with administrative privileges (`X-API-Key` header). |
+- Paca **≥ v0.13.3** (`minCoreVersion`).
+- `ENCRYPTION_KEY` configured in `.env` (64 hex characters).
+- `PUBLIC_URL` reachable via HTTPS from GitLab.
+- Admin API Key (`X-API-Key`).
 
-In official Paca deployments ([`scripts/install.sh`](https://github.com/Paca-AI/paca/blob/master/scripts/install.sh), [`deploy/README.md`](https://github.com/Paca-AI/paca/blob/master/deploy/README.md)), these are configured in `.env`.
-
-Quick health verification:
-```bash
-# On the host running Docker:
-grep -E '^(ENCRYPTION_KEY|PUBLIC_URL)=' .env
-curl -sS "${PUBLIC_URL}/api/v1/health"
-```
-
-The production Compose stack (`name: paca`) uses the following named volumes:
+The production Docker Compose stack (`name: paca`) uses the following volumes:
 
 | Docker Volume | Container Mount | Contents |
 |---------------|-----------------|----------|
@@ -66,12 +284,10 @@ The production Compose stack (`name: paca`) uses the following named volumes:
 | `paca_mcp_plugins` | `/plugins-mcp` | MCP bundle (`mcp.js`) |
 | `paca_skills_plugins` | `/plugins-skills` | Agent skill definitions (`paca-gitlab-workflow/SKILL.md`) |
 
-#### 2. Automated Installation via Script
-
-Use the included helper script [`scripts/install-from-release.sh`](scripts/install-from-release.sh):
+#### 2. Automated Install via Script
 
 ```bash
-export PACA_URL='https://paca.example.com'   # PUBLIC_URL (no trailing slash)
+export PACA_URL='https://paca.example.com'
 export PACA_API_KEY='your-admin-api-key'
 
 ./scripts/install-from-release.sh \
@@ -80,11 +296,9 @@ export PACA_API_KEY='your-admin-api-key'
   --version v0.5.1
 ```
 
-The script verifies SHA256 checksums, populates the `paca_*_plugins` volumes, and calls `POST /api/v1/admin/plugins` (or `PATCH` if updating) to trigger database migrations and runtime loading.
+The script verifies SHA256 checksums, populates the `paca_*_plugins` volumes, and registers/updates the plugin via `POST/PATCH /api/v1/admin/plugins`.
 
-#### 3. Manual Installation (Step-by-Step)
-
-If installing manually without the script:
+#### 3. Manual Step-by-Step Install
 
 ```bash
 PLUGIN_ID="com.paca.gitlab"
@@ -93,7 +307,7 @@ BASE="https://github.com/gorlix/paca-plugin-gitlab/releases/download/${VERSION}"
 WORKDIR=$(mktemp -d)
 cd "$WORKDIR"
 
-# 1. Download release assets and verify checksums
+# 1. Download and verify release assets
 curl -fsSL -O "$BASE/checksums.txt"
 for f in \
   gitlab-backend-wasm.tar.gz \
@@ -169,85 +383,10 @@ else
     -d "{\"name\":\"$PLUGIN_ID\",\"version\":\"$VERSION_NUM\",\"manifest\":$MANIFEST,\"enabled\":true}"
 fi
 
-# 5. Clean up temporary directory
 rm -rf "$WORKDIR"
 ```
 
-If UI assets do not immediately appear in the browser, restart gateway and api containers:
-```bash
-docker compose restart api gateway
-```
-
----
-
-## Configuration & Usage
-
-### 1. Connecting GitLab to a Project
-
-1. Open your Paca project → **Settings** → **GitLab** tab (requires `gitlab.manage` permission).
-2. **Instance URL** (optional): leave empty or use `https://gitlab.com`. For Self-Managed, enter the base instance URL (e.g. `https://gitlab.example.com`).
-3. **Token Type**: Personal, Project, or Group Access Token.
-4. **Access Token**: Enter token with [`api`](https://docs.gitlab.com/security/tokens/access_token_scopes/) scope.
-5. Select and **Link** the desired GitLab repositories.
-
-> [!NOTE]
-> - **Personal Access Token**: Can see all repositories accessible to the user.
-> - **Project / Group Access Token**: Scoped strictly to that project or group; seeing only one or few projects is expected behavior.
-> - Creating project webhooks requires the **Maintainer** or **Owner** role on the GitLab repository.
-
-### 2. Webhooks (GitLab 19+)
-
-When a repository is linked, the plugin provisions a GitLab project webhook with:
-- Events: `push_events`, `merge_requests_events`, `pipeline_events`.
-- **`signing_token`** (`whsec_...`): Standard Webhooks HMAC verification (primary verification path; not legacy secret tokens).
-
-Callback route:
-```text
-{PUBLIC_URL}/api/v1/plugins/com.paca.gitlab/projects/{projectId}/webhook
-```
-
-Expected inbound headers: `X-Gitlab-Event`, `webhook-id`, `webhook-timestamp`, `webhook-signature`.
-
----
-
-## Differences Compared to the GitHub Plugin
-
-| | GitHub (`com.paca.github`) | GitLab (`com.paca.gitlab`) |
-|---|---|---|
-| **Object** | Pull Request | Merge Request (`iid`) |
-| **Authentication** | Personal Access Token (PAT) | Personal, Project, or Group Access Token |
-| **API Host** | Fixed `api.github.com` | `instance_url` (defaults to `https://gitlab.com`) |
-| **Webhook Verification** | `X-Hub-Signature-256` | HMAC `signing_token` (GitLab **19+**, Standard Webhooks) |
-| **CI Integration** | Checks / Commit statuses | Merge Request Pipelines |
-| **Reviews** | PR reviews | Note + Approvals API (`APPROVE` / `REQUEST_CHANGES` / `COMMENT`) |
-| **UI Localization** | English | **en** + **it** |
-
----
-
-## Architecture
-
-```text
-├── backend/   Go → WASM (plugin-sdk-go), schema plugin_data_com_paca_gitlab
-├── frontend/  React Module Federation + i18n (en/it)
-├── mcp/       Paca-centric MCP tools
-├── skills/    paca-gitlab-workflow
-└── scripts/   install-from-release.sh (production installation helper)
-```
-
-Plugin ID: `com.paca.gitlab` · Custom permission: `gitlab.manage`
-
-### Main Routes
-
-Host prefix: `/api/v1/plugins/com.paca.gitlab/projects/:projectId/…`
-
-| Method | Path | Notes |
-|--------|------|-------|
-| GET/POST/DELETE | `/integration`, `/integration/token` | Status + set/remove token (`instance_url`, `token_kind`) |
-| GET | `/integration/accessible-repos` | Projects visible to the token |
-| GET/POST/DELETE | `/repositories`… | Link/unlink + webhooks |
-| * | `/tasks/:taskId/pull-requests`… | MRs (legacy "pull-requests" path, MR semantics) |
-| * | `/tasks/:taskId/branches`… | Branches |
-| POST | `/webhook` | Public endpoint (signing_token signature verification) |
+If UI assets do not render immediately, run `docker compose restart api gateway`.
 
 ---
 
@@ -267,23 +406,44 @@ Host prefix: `/api/v1/plugins/com.paca.gitlab/projects/:projectId/…`
 
 ---
 
-## Local Development
+## Development
 
-To run tests and build each component locally:
+### Backend
 
 ```bash
-# Backend tests & WASM compilation
 cd backend
-go test -race ./...
+
+# Run tests with race detector
+go test -race -v ./...
+
+# Build WASM binary (requires TinyGo 0.41.1+)
 tinygo build -target=wasip1 -buildmode=c-shared -o gitlab.wasm .
+```
 
-# Frontend build & typecheck
-cd ../frontend
-bun install && bun run typecheck && bun run build
+### Frontend
 
-# MCP bundle
-cd ../mcp
-bun install && bun run typecheck && bun run build
+```bash
+cd frontend
+
+# Install dependencies
+bun install
+
+# Typecheck & build
+bun run typecheck
+bun run build
+```
+
+### MCP
+
+```bash
+cd mcp
+
+# Install dependencies
+bun install
+
+# Typecheck & build
+bun run typecheck
+bun run build
 ```
 
 To install directly into a local development Paca instance, use Paca's development script:
@@ -294,12 +454,14 @@ To install directly into a local development Paca instance, use Paca's developme
   --api-key "$API_KEY"
 ```
 
-Releases are published automatically on tag pushes matching `v*` via [`.github/workflows/release.yml`](.github/workflows/release.yml).
-
 ---
 
-## Notes
+## Release (CD)
 
-- **Self-Managed:** `instance_url` field is implemented and supported; primary CI validation targets GitLab.com.
-- **GitHub / GitLab Coexistence:** Running GitHub and GitLab integrations simultaneously on the exact same Paca project is **not** supported.
-- **Minimum GitLab Version:** **19+** is required for HMAC `signing_token` webhook signatures.
+The release workflow is located at [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+It triggers on:
+- Tag pushes matching `v*` (e.g. `v0.5.1`).
+- Manual `workflow_dispatch`.
+
+The workflow builds backend WASM, frontend, and MCP bundles, packages migrations, skills, and `plugin.json`, generates `checksums.txt`, and publishes all `.tar.gz` assets to a GitHub Release.
