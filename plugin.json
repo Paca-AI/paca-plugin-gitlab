@@ -2,7 +2,7 @@
   "id": "com.paca.gitlab",
   "displayName": "GitLab Integration",
   "description": "Integrates GitLab projects, merge requests, and branches with Paca projects and tasks.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "minCoreVersion": "v0.13.3",
   "capabilities": ["repository"],
   "permissions": ["db.read", "db.write"],
