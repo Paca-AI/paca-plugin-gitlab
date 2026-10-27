@@ -1,0 +1,52 @@
+package main
+
+import (
+	"errors"
+	"time"
+)
+
+// spiStore is what the Git provider needs persisted. The production
+// implementation (dbStore) is backed by the plugin's tables; tests use an
+// in-memory one. Secrets are decrypted by the store, never by callers.
+type spiStore interface {
+	loadIdentity(id string) (identityRecord, error)
+	createIdentity(r identityRecord) (id string, err error)
+	deleteIdentity(id string) error
+
+	saveSetup(s setupSession) error
+	loadSetup(state string) (setupSession, error)
+	// claimSetup marks the setup as completed and reports whether this call was
+	// the one that did, so two concurrent completions cannot both create an
+	// identity from the same state.
+	claimSetup(state string) (bool, error)
+}
+
+var errNoSuchIdentity = errors.New("gitlab identity not found")
+var errNoSuchSetup = errors.New("setup session not found")
+
+// identityRecord is one GitLab access-token identity.
+type identityRecord struct {
+	ID       string // row id; the SPI IdentityRef.ID
+	Host     string // e.g. gitlab.com or gitlab.example.com
+	UserID   int64  // the token owner on GitLab (a bot user for project/group tokens)
+	Username string // the handle people mention
+	Name     string
+	Bot      bool
+	// Token is the access token used for every API call and for git writes.
+	Token string
+	// ReadToken, when set, is handed out instead of Token for read-only git use.
+	ReadToken     string
+	WebhookSecret string
+	// ExpiresAt is the earliest expiry of the stored tokens; zero when unknown.
+	ExpiresAt time.Time
+}
+
+// setupSession is one identity-setup attempt, keyed by its single-use state.
+type setupSession struct {
+	State     string
+	Scope     string // shared | agent
+	AgentID   string
+	Host      string
+	Completed bool
+	ExpiresAt time.Time
+}

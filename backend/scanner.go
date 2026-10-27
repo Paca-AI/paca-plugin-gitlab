@@ -51,7 +51,3 @@ func (s *scanner) int64Val(col string) int64 {
 	}
 	return 0
 }
-
-func (s *scanner) intVal(col string) int {
-	return int(s.int64Val(col))
-}

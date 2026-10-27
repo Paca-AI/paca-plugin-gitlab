@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install com.gorlix.gitlab from a GitHub Release into a production Paca stack.
+# Install com.paca.gitlab from a GitHub Release into a production Paca stack.
 #
 # Populates Docker named volumes (compose project "paca") and registers the
 # plugin via POST/PATCH /api/v1/admin/plugins. The Paca API then runs
@@ -11,14 +11,14 @@
 #   ./scripts/install-from-release.sh \
 #     --api-url https://paca.example.com \
 #     --api-key "$PACA_API_KEY" \
-#     [--version v0.5.2] \
+#     [--version v0.6.0] \
 #     [--compose-project paca]
 #
 set -euo pipefail
 
-PLUGIN_ID="com.gorlix.gitlab"
-REPO="gorlix/paca-plugin-gitlab"
-VERSION="v0.5.2"
+PLUGIN_ID="com.paca.gitlab"
+REPO="Paca-AI/paca-plugin-gitlab"
+VERSION="v0.6.0"
 COMPOSE_PROJECT="paca"
 API_URL="${PACA_URL:-}"
 API_KEY="${PACA_API_KEY:-}"
@@ -54,18 +54,13 @@ for cmd in curl tar sha256sum jq docker; do
 done
 
 VOL_BACKEND="${COMPOSE_PROJECT}_backend_plugins"
-VOL_FRONTEND="${COMPOSE_PROJECT}_frontend_plugins"
-VOL_MCP="${COMPOSE_PROJECT}_mcp_plugins"
-VOL_SKILLS="${COMPOSE_PROJECT}_skills_plugins"
 
-for vol in "$VOL_BACKEND" "$VOL_FRONTEND" "$VOL_MCP" "$VOL_SKILLS"; do
-  if ! docker volume inspect "$vol" >/dev/null 2>&1; then
-    echo "error: docker volume '$vol' not found." >&2
-    echo "  Expected compose project name '${COMPOSE_PROJECT}' (see docker-compose.yml 'name: paca')." >&2
-    echo "  List volumes: docker volume ls | grep plugins" >&2
-    exit 1
-  fi
-done
+if ! docker volume inspect "$VOL_BACKEND" >/dev/null 2>&1; then
+  echo "error: docker volume '$VOL_BACKEND' not found." >&2
+  echo "  Expected compose project name '${COMPOSE_PROJECT}' (see docker-compose.yml 'name: paca')." >&2
+  echo "  List volumes: docker volume ls | grep plugins" >&2
+  exit 1
+fi
 
 BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 WORKDIR=$(mktemp -d)
@@ -74,12 +69,10 @@ cd "$WORKDIR"
 
 echo "==> Downloading ${VERSION} assets from ${REPO}"
 curl -fsSL -O "${BASE}/checksums.txt"
+# The plugin is provider-only: a backend, its migrations and the manifest.
 ASSETS=(
   gitlab-backend-wasm.tar.gz
-  gitlab-frontend-dist.tar.gz
-  gitlab-mcp-dist.tar.gz
   gitlab-migrations.tar.gz
-  gitlab-skills-bundle.tar.gz
   gitlab-plugin-manifest.tar.gz
 )
 for f in "${ASSETS[@]}"; do
@@ -88,11 +81,7 @@ done
 sha256sum -c checksums.txt
 
 STAGE="$WORKDIR/stage"
-mkdir -p \
-  "$STAGE/backend/$PLUGIN_ID/migrations" \
-  "$STAGE/frontend/$PLUGIN_ID" \
-  "$STAGE/mcp/$PLUGIN_ID" \
-  "$STAGE/skills/$PLUGIN_ID"
+mkdir -p "$STAGE/backend/$PLUGIN_ID/migrations"
 
 echo "==> Staging plugin layout for ${PLUGIN_ID}"
 tar -xzf gitlab-backend-wasm.tar.gz -C "$STAGE/backend/$PLUGIN_ID"
@@ -110,46 +99,16 @@ tar -xzf gitlab-plugin-manifest.tar.gz -C "$STAGE/backend/$PLUGIN_ID"
 tar -xzf gitlab-migrations.tar.gz -C "$STAGE"
 cp "$STAGE/migrations/"*.sql "$STAGE/backend/$PLUGIN_ID/migrations/"
 
-tar -xzf gitlab-frontend-dist.tar.gz -C "$STAGE"
-cp -a "$STAGE/dist/." "$STAGE/frontend/$PLUGIN_ID/"
-rm -rf "$STAGE/dist"
-
-tar -xzf gitlab-mcp-dist.tar.gz -C "$STAGE"
-cp -a "$STAGE/dist/." "$STAGE/mcp/$PLUGIN_ID/"
-rm -rf "$STAGE/dist"
-
-tar -xzf gitlab-skills-bundle.tar.gz -C "$STAGE"
-cp -a "$STAGE/skills/." "$STAGE/skills/$PLUGIN_ID/"
-
-if [[ ! -f "$STAGE/frontend/$PLUGIN_ID/assets/remoteEntry.js" ]]; then
-  echo "error: missing frontend assets/remoteEntry.js after extract" >&2
-  exit 1
-fi
-if [[ ! -f "$STAGE/mcp/$PLUGIN_ID/mcp.js" ]]; then
-  echo "error: missing mcp.js after extract" >&2
-  exit 1
-fi
-
-echo "==> Copying into Docker volumes (${COMPOSE_PROJECT}_*_plugins)"
+echo "==> Copying into Docker volume ${VOL_BACKEND}"
 docker run --rm \
   -e PLUGIN_ID="$PLUGIN_ID" \
   -v "${VOL_BACKEND}:/plugins" \
-  -v "${VOL_FRONTEND}:/plugins-frontend" \
-  -v "${VOL_MCP}:/plugins-mcp" \
-  -v "${VOL_SKILLS}:/plugins-skills" \
   -v "${STAGE}:/stage:ro" \
   alpine:3.20 sh -c '
     set -e
-    mkdir -p /plugins /plugins-frontend /plugins-mcp /plugins-skills
-    rm -rf \
-      "/plugins/${PLUGIN_ID}" \
-      "/plugins-frontend/${PLUGIN_ID}" \
-      "/plugins-mcp/${PLUGIN_ID}" \
-      "/plugins-skills/${PLUGIN_ID}"
+    mkdir -p /plugins
+    rm -rf "/plugins/${PLUGIN_ID}"
     cp -a "/stage/backend/${PLUGIN_ID}" /plugins/
-    cp -a "/stage/frontend/${PLUGIN_ID}" /plugins-frontend/
-    cp -a "/stage/mcp/${PLUGIN_ID}" /plugins-mcp/
-    cp -a "/stage/skills/${PLUGIN_ID}" /plugins-skills/
   '
 
 MANIFEST=$(cat "$STAGE/backend/$PLUGIN_ID/plugin.json")
@@ -190,5 +149,5 @@ if [[ "$RESP_HTTP" != "200" && "$RESP_HTTP" != "201" ]]; then
 fi
 
 echo "==> OK: ${PLUGIN_ID} v${VERSION_NUM} installed and enabled"
-echo "    Next: project Settings → GitLab → token + link repositories"
-echo "    If the UI bundle looks stale: docker compose restart gateway"
+echo "    Next: Admin → Git → GitLab → Set up (paste an access token), then link"
+echo "    projects from each Paca project's Settings → Git."
