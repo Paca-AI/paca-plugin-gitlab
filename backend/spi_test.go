@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -292,10 +293,11 @@ func TestRateLimitAndTransientFailuresReachCore(t *testing.T) {
 
 func TestVerifyDelivery(t *testing.T) {
 	secret := "whsec_" + base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	nowTS := strconv.FormatInt(time.Now().Unix(), 10)
 	body := []byte(`{"object_kind":"push"}`)
 	key, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(secret, "whsec_"))
 	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte("msg-1.1700000000." + string(body)))
+	mac.Write([]byte("msg-1." + nowTS + "." + string(body)))
 	sig := "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	req := func(h map[string]string) gp.WebhookRequest { return gp.WebhookRequest{Body: body, Headers: h} }
@@ -305,16 +307,24 @@ func TestVerifyDelivery(t *testing.T) {
 	}{
 		"secret token":            {req(map[string]string{"x-gitlab-token": secret}), true},
 		"wrong secret token":      {req(map[string]string{"x-gitlab-token": secret + "x"}), false},
-		"standard webhooks":       {req(map[string]string{"webhook-id": "msg-1", "webhook-timestamp": "1700000000", "webhook-signature": sig}), true},
-		"signature of another id": {req(map[string]string{"webhook-id": "msg-2", "webhook-timestamp": "1700000000", "webhook-signature": sig}), false},
-		"one of several":          {req(map[string]string{"webhook-id": "msg-1", "webhook-timestamp": "1700000000", "webhook-signature": "v1,AAAA " + sig}), true},
+		"standard webhooks":       {req(map[string]string{"webhook-id": "msg-1", "webhook-timestamp": nowTS, "webhook-signature": sig}), true},
+		"signature of another id": {req(map[string]string{"webhook-id": "msg-2", "webhook-timestamp": nowTS, "webhook-signature": sig}), false},
+		"one of several":          {req(map[string]string{"webhook-id": "msg-1", "webhook-timestamp": nowTS, "webhook-signature": "v1,AAAA " + sig}), true},
 		"no credentials":          {req(map[string]string{}), false},
 		// A present-but-wrong token must not fall through to the signature check.
-		"wrong token with a valid signature": {req(map[string]string{"x-gitlab-token": "nope", "webhook-id": "msg-1", "webhook-timestamp": "1700000000", "webhook-signature": sig}), false},
+		"wrong token with a valid signature": {req(map[string]string{"x-gitlab-token": "nope", "webhook-id": "msg-1", "webhook-timestamp": nowTS, "webhook-signature": sig}), false},
 	} {
 		if got := verifyDelivery(tc.req, secret); got != tc.want {
 			t.Errorf("%s: verified = %v, want %v", name, got, tc.want)
 		}
+	}
+	// A correctly signed but old delivery is a replay.
+	oldTS := strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)
+	omac := hmac.New(sha256.New, key)
+	omac.Write([]byte("msg-1." + oldTS + "." + string(body)))
+	osig := "v1," + base64.StdEncoding.EncodeToString(omac.Sum(nil))
+	if verifyDelivery(req(map[string]string{"webhook-id": "msg-1", "webhook-timestamp": oldTS, "webhook-signature": osig}), secret) {
+		t.Error("a delivery signed an hour ago must be rejected as a replay")
 	}
 	if verifyDelivery(req(map[string]string{"x-gitlab-token": ""}), "") {
 		t.Error("an identity without a secret must verify nothing")
@@ -323,6 +333,7 @@ func TestVerifyDelivery(t *testing.T) {
 
 func TestWebhook_StandardWebhooksSignedDeliveryParses(t *testing.T) {
 	p, _, st := seededProvider(t)
+	nowTS := strconv.FormatInt(time.Now().Unix(), 10)
 	rec := st.identities[fakeIdentityID]
 	rec.WebhookSecret = "whsec_" + base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	st.identities[fakeIdentityID] = rec
@@ -330,8 +341,8 @@ func TestWebhook_StandardWebhooksSignedDeliveryParses(t *testing.T) {
 	delete(req.Headers, "x-gitlab-token")
 	key, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(rec.WebhookSecret, "whsec_"))
 	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte("msg-9.1700000000." + string(req.Body)))
-	req.Headers["webhook-id"], req.Headers["webhook-timestamp"] = "msg-9", "1700000000"
+	mac.Write([]byte("msg-9." + nowTS + "." + string(req.Body)))
+	req.Headers["webhook-id"], req.Headers["webhook-timestamp"] = "msg-9", nowTS
 	req.Headers["webhook-signature"] = "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	evs, err := p.VerifyAndParseWebhook(bg, req)
 	if err != nil || len(evs) != 1 || len(evs[0].Addressed) != 1 {

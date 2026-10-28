@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,9 @@ func normalizeHost(h string) (string, bool) {
 // baseURL is the REST API root of a GitLab host.
 func baseURL(host string) string { return "https://" + host + apiPrefix }
 
+// webhookTolerance is how far a Standard Webhooks timestamp may be from now.
+const webhookTolerance = 5 * time.Minute
+
 func secretEqual(a, b string) bool {
 	return a != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
@@ -66,6 +70,15 @@ func secretEqual(a, b string) bool {
 // when a hook has a signing token (whsec_ + base64 key).
 func verifyStandardWebhook(payload []byte, signingToken, msgID, timestamp, signatureHeader string) bool {
 	if signingToken == "" || msgID == "" || timestamp == "" || signatureHeader == "" {
+		return false
+	}
+	// A signed delivery stays valid only for a short window, so a captured one
+	// cannot be replayed later.
+	sec, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+	if d := time.Since(time.Unix(sec, 0)); d > webhookTolerance || d < -webhookTolerance {
 		return false
 	}
 	key, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(signingToken, "whsec_"))

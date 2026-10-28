@@ -74,7 +74,7 @@ func deliveryID(req gp.WebhookRequest) string {
 		}
 	}
 	sum := sha256.Sum256(req.Body)
-	return hex.EncodeToString(sum[:8])
+	return hex.EncodeToString(sum[:16])
 }
 
 // delivery turns the payloads of one identity's webhook into events.
