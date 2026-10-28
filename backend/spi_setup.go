@@ -190,8 +190,11 @@ func (p *glProvider) CompleteIdentitySetup(_ context.Context, req gp.CompleteSet
 	if err != nil {
 		return gp.Identity{}, err
 	}
+	reach := classifyToken(user.Username, user.Bot)
+	lookupReach(api, &reach)
 	rec := identityRecord{
-		Host: s.Host, UserID: user.ID, Username: user.Username, Name: user.Name, Bot: user.Bot || accessTokenBotRe.MatchString(user.Username),
+		Reach: reach,
+		Host:  s.Host, UserID: user.ID, Username: user.Username, Name: user.Name, Bot: user.Bot || accessTokenBotRe.MatchString(user.Username),
 		Token: token, WebhookSecret: secret, ExpiresAt: info.expiry(),
 	}
 	if rt := strings.TrimSpace(req.Params[fieldReadToken]); rt != "" {
@@ -220,15 +223,79 @@ func (p *glProvider) CompleteIdentitySetup(_ context.Context, req gp.CompleteSet
 	return identityOf(rec), nil
 }
 
+// classifyToken tells the kind of a token from its user name: GitLab names the
+// bot user of a project or group access token "project_<id>_bot_…" or
+// "group_<id>_bot_…". Any other bot user is a service account, whose name its
+// creator may choose, so it is told by GitLab's bot flag; it reaches what its
+// memberships allow, like a personal token. A human user holds a personal token.
+// Path is not set.
+func classifyToken(username string, bot bool) tokenReach {
+	m := accessTokenBotKindRe.FindStringSubmatch(username)
+	if m == nil {
+		if bot {
+			return tokenReach{Type: tokenServiceAccount}
+		}
+		return tokenReach{Type: tokenPersonal}
+	}
+	id, _ := strconv.ParseInt(m[2], 10, 64)
+	if m[1] == "group" {
+		return tokenReach{Type: tokenGroup, ResourceID: id}
+	}
+	return tokenReach{Type: tokenProject, ResourceID: id}
+}
+
+// lookupReach fills in the path of the project or group a token was issued for.
+// It reports false when the lookup was a transient failure worth retrying; any
+// other failure (a token without read_api, say) keeps the type with no path.
+func lookupReach(api *glAPI, r *tokenReach) bool {
+	var out struct {
+		Path string `json:"path_with_namespace"`
+		Full string `json:"full_path"`
+	}
+	switch r.Type {
+	case tokenProject:
+		if err := api.get("/projects/"+strconv.FormatInt(r.ResourceID, 10), &out); err != nil {
+			return gp.AsError(err).Code != gp.CodeTransient
+		}
+		r.Path = out.Path
+	case tokenGroup:
+		if err := api.get("/groups/"+strconv.FormatInt(r.ResourceID, 10), &out); err != nil {
+			return gp.AsError(err).Code != gp.CodeTransient
+		}
+		r.Path = out.Full
+	}
+	return true
+}
+
+// label names what the token covers, e.g. "Project token · acme/ui".
+func (r identityRecord) reachLabel() string {
+	switch r.Reach.Type {
+	case tokenProject, tokenGroup:
+		kind := "Project token"
+		if r.Reach.Type == tokenGroup {
+			kind = "Group token"
+		}
+		if r.Reach.Path != "" {
+			return kind + " · " + r.Reach.Path
+		}
+		return kind + " · " + r.Username
+	case tokenServiceAccount:
+		// The user name is long and generated; the name given on GitLab is the one
+		// people recognise.
+		if r.Name != "" {
+			return "Service account · " + r.Name
+		}
+		return "Service account · " + r.Username
+	}
+	return "Personal token · " + r.Username
+}
+
 func identityOf(rec identityRecord) gp.Identity {
 	kind := gp.IdentityToken
 	if rec.Bot {
 		kind = gp.IdentityBotUser
 	}
-	name := rec.Name
-	if name == "" {
-		name = rec.Username
-	}
+	name := rec.reachLabel()
 	return gp.Identity{
 		Ref:         gp.IdentityRef{ID: rec.ID, Handle: rec.mentionHandle(), ProviderRef: providerRef(map[string]any{"user_id": rec.UserID})},
 		Host:        rec.Host,

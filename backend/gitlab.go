@@ -38,6 +38,9 @@ var hostRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5}
 // access tokens, e.g. project_123_bot_ab12cd34 or group_9_bot.
 var accessTokenBotRe = regexp.MustCompile(`^(?:project|group)_[0-9]+_bot(?:_[0-9a-f]+)?$`)
 
+// accessTokenBotKindRe splits such a user name into its kind and resource id.
+var accessTokenBotKindRe = regexp.MustCompile(`^(project|group)_([0-9]+)_bot(?:_[0-9a-f]+)?$`)
+
 // nowStr returns the current UTC time as an RFC3339Nano string.
 func nowStr() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 

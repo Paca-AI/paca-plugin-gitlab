@@ -12,6 +12,8 @@ type spiStore interface {
 	loadIdentity(id string) (identityRecord, error)
 	createIdentity(r identityRecord) (id string, err error)
 	deleteIdentity(id string) error
+	// saveReach records what an identity's token covers (see identityRecord).
+	saveReach(id string, r tokenReach) error
 
 	saveSetup(s setupSession) error
 	loadSetup(state string) (setupSession, error)
@@ -39,6 +41,27 @@ type identityRecord struct {
 	WebhookSecret string
 	// ExpiresAt is the earliest expiry of the stored tokens; zero when unknown.
 	ExpiresAt time.Time
+	// Reach is what the token covers; its Type is empty until classified.
+	Reach tokenReach
+}
+
+// Token types: what kind of access token an identity holds.
+const (
+	tokenPersonal       = "personal"
+	tokenProject        = "project"
+	tokenGroup          = "group"
+	tokenServiceAccount = "service_account"
+)
+
+// tokenReach is what an access token can reach: a personal token the user's
+// memberships, a project token one project, a group token a group and its
+// subgroups.
+type tokenReach struct {
+	Type string // personal | project | group; empty when not yet classified
+	// ResourceID and Path name the project or group of a project or group token.
+	// Path stays empty when the lookup failed (a token without read_api, say).
+	ResourceID int64
+	Path       string
 }
 
 // setupSession is one identity-setup attempt, keyed by its single-use state.
