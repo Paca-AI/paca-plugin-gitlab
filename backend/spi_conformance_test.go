@@ -49,6 +49,18 @@ func (m *memStore) deleteIdentity(id string) error {
 	return nil
 }
 
+func (m *memStore) saveReach(id string, r tokenReach) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.identities[id]
+	if !ok {
+		return errNoSuchIdentity
+	}
+	rec.Reach = r
+	m.identities[id] = rec
+	return nil
+}
+
 func (m *memStore) saveSetup(s setupSession) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
