@@ -39,8 +39,8 @@ func beginShared(t *testing.T, p *glProvider) gp.SetupStep {
 func TestSetup_TokenFormAsksForTheRightInputs(t *testing.T) {
 	p, _, _ := seededProvider(t)
 	step := beginShared(t, p)
-	if step.Kind != gp.StepTokenForm || step.State == "" || !strings.Contains(step.Prompt, "https://paca.test/hook") {
-		t.Fatalf("step %+v: want a token form whose prompt names the webhook URL", step)
+	if step.Kind != gp.StepTokenForm || step.State == "" || !strings.Contains(step.Prompt, "Maintainer") || strings.Contains(step.Prompt, "https://paca.test/hook") {
+		t.Fatalf("step %+v: want a token form whose prompt asks for the Maintainer role and does not send the user to register a webhook by hand", step)
 	}
 	required := map[string]bool{}
 	for _, f := range step.Form {
@@ -49,8 +49,8 @@ func TestSetup_TokenFormAsksForTheRightInputs(t *testing.T) {
 			t.Errorf("field %s holds a secret but is not marked secret", f.Name)
 		}
 	}
-	if !required[fieldToken] || !required[fieldWebhookSecret] || required[fieldReadToken] {
-		t.Errorf("required fields %v: want token and webhook_secret required, read_token optional", required)
+	if len(required) != 1 || !required[fieldToken] {
+		t.Errorf("form fields %v: want only the access token (the webhook secret is generated)", required)
 	}
 }
 
@@ -521,4 +521,86 @@ func TestStatusRefRoundTrip(t *testing.T) {
 			t.Errorf("%q should not decode", bad)
 		}
 	}
+}
+
+// Leaving the webhook secret empty is fine: the provider generates one.
+func TestSetup_GeneratesTheWebhookSecretWhenLeftEmpty(t *testing.T) {
+	p, _, st := seededProvider(t)
+	step := beginShared(t, p)
+	id, err := p.CompleteIdentitySetup(bg, gp.CompleteSetupRequest{Scope: gp.SetupShared, Host: "gitlab.com", State: step.State,
+		Params: map[string]string{fieldToken: fakeNewToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.loadIdentity(id.Ref.ID)
+	if err != nil || len(stored.WebhookSecret) < minWebhookSecretLen {
+		t.Fatalf("stored secret = %q, %v", stored.WebhookSecret, err)
+	}
+}
+
+// GitLab refuses GET /user to some tokens (no read_user/api scope on a bot
+// token); they are accepted when /personal_access_tokens/self names the user.
+func TestSetup_TokenThatCannotReadUserIsIdentifiedByItself(t *testing.T) {
+	p, g, _ := seededProvider(t)
+	g.forceError["GET /user"] = fakeResponse{status: 403, body: `{"message":"403 Forbidden"}`}
+	step := beginShared(t, p)
+	id, err := p.CompleteIdentitySetup(bg, gp.CompleteSetupRequest{Scope: gp.SetupShared, Host: "gitlab.com", State: step.State, Params: completeParams(fakeNewToken)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Ref.Handle != "project_1_bot_ab12" {
+		t.Errorf("identity %+v", id)
+	}
+}
+
+// A rejection says what GitLab answered, so the cause can be told apart.
+func TestSetup_RejectionQuotesGitLab(t *testing.T) {
+	p, g, _ := seededProvider(t)
+	step := beginShared(t, p)
+	_, err := p.CompleteIdentitySetup(bg, gp.CompleteSetupRequest{Scope: gp.SetupShared, Host: "gitlab.com", State: step.State, Params: completeParams("glpat-wrong")})
+	code(t, err, gp.CodeValidation)
+	if !strings.Contains(err.Error(), "HTTP 401") || !strings.Contains(err.Error(), "401 Unauthorized") {
+		t.Errorf("error %q should quote GitLab's answer", err)
+	}
+	g.forceError["GET /user"] = fakeResponse{status: 404, body: `{"message":"404 Not Found"}`}
+	g.forceError["GET /personal_access_tokens/self"] = fakeResponse{status: 404, body: `{"message":"404 Not Found"}`}
+	_, err = p.CompleteIdentitySetup(bg, gp.CompleteSetupRequest{Scope: gp.SetupShared, Host: "gitlab.com", State: step.State, Params: completeParams(fakeNewToken)})
+	code(t, err, gp.CodeValidation)
+	if !strings.Contains(err.Error(), "HTTP 404") || !strings.Contains(err.Error(), "host is the GitLab instance") {
+		t.Errorf("error %q should name the status and hint at the host", err)
+	}
+}
+
+func TestSetup_InsufficientScopeSaysWhichScopeToUse(t *testing.T) {
+	p, g, _ := seededProvider(t)
+	g.forceError["GET /user"] = fakeResponse{status: 403, body: `{"error":"insufficient_scope","error_description":"scope"}`}
+	g.forceError["GET /personal_access_tokens/self"] = fakeResponse{status: 403, body: `{"error":"insufficient_scope"}`}
+	step := beginShared(t, p)
+	_, err := p.CompleteIdentitySetup(bg, gp.CompleteSetupRequest{Scope: gp.SetupShared, Host: "gitlab.com", State: step.State, Params: completeParams(fakeNewToken)})
+	code(t, err, gp.CodeValidation)
+	if !strings.Contains(err.Error(), "api scope") {
+		t.Errorf("error %q should name the scope to use", err)
+	}
+}
+
+// brokenLoadStore cannot read identities (a schema out of step with the code)
+// but can still delete them.
+type brokenLoadStore struct{ *memStore }
+
+func (brokenLoadStore) loadIdentity(string) (identityRecord, error) {
+	return identityRecord{}, errors.New("column does not exist")
+}
+
+func TestBrokenStore_DeleteStillWorksAndResolveSaysSo(t *testing.T) {
+	_, g, st := seededProvider(t)
+	_ = g
+	p := newGLProvider(brokenLoadStore{st})
+	if _, err := p.DeleteIdentity(bg, gp.DeleteIdentityRequest{Identity: gp.IdentityRef{ID: fakeIdentityID}}); err != nil {
+		t.Fatalf("delete must not need to read the identity: %v", err)
+	}
+	if _, ok := st.identities[fakeIdentityID]; ok {
+		t.Fatal("the identity should be gone")
+	}
+	_, err := p.ResolveRepository(bg, gp.ResolveRepoRequest{PathOrURL: "acme/web", Candidates: []gp.IdentityRef{{ID: "x"}}})
+	code(t, err, gp.CodeInternal) // not a misleading "no identity can see it"
 }

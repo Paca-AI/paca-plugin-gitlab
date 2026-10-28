@@ -35,10 +35,11 @@ CREATE TABLE IF NOT EXISTS gitlab_setup_sessions (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- The plugin is a Git provider: repositories, merge requests, task links and
--- the per-project connection now live in Paca core (git_* tables). The
--- project-bound tables of the previous release are dropped; a project-scoped
--- token cannot back a provider identity, so no data is migrated.
+-- The plugin is a Git provider: repositories, merge requests, task links and the
+-- per-project connection now live in Paca core (git_* tables). The previous
+-- release's project-bound tables are dropped; a project-scoped token cannot back
+-- a provider identity on its own (it has no webhook secret), so nothing is
+-- migrated.
 DROP TABLE IF EXISTS gitlab_task_mr_links;
 DROP TABLE IF EXISTS gitlab_task_branches;
 DROP TABLE IF EXISTS gitlab_merge_requests;

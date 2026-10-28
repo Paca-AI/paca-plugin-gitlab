@@ -50,3 +50,8 @@ type setupSession struct {
 	Completed bool
 	ExpiresAt time.Time
 }
+
+// mentionHandle is what people mention: the identity's GitLab username. For a
+// project or group access token that is the bot user GitLab generates
+// ("project_<id>_bot_<random>"), which GitLab cannot rename.
+func (r identityRecord) mentionHandle() string { return r.Username }

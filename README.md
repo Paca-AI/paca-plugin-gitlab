@@ -4,7 +4,7 @@ GitLab provider for Paca's platform-neutral Git integration (`gitprovider.v1`, s
 
 Paca core owns repositories, project links, identities, merge requests, triggers, agent runs and audit. This plugin only adapts GitLab to the provider SPI:
 
-- Identity setup through a token form: an access token (and an optional read-only one) pasted by an administrator.
+- Identity setup through a token form: an access token with the Maintainer role and the api scope, pasted by a user; the webhook secret is generated.
 - Repository listing and resolution on gitlab.com or a self-managed instance.
 - Credentials for git and the API (GitLab cannot mint narrower tokens, so these are the stored tokens).
 - Webhook verification and event normalisation; webhook registration per project.
@@ -51,17 +51,11 @@ The plugin has no HTTP routes of its own: core calls the internal-only `POST /_g
 
 ## Setting it up
 
-1. **Create a token** on GitLab, on the project or group the agents should work in:
-   - *Settings → Access tokens*, role **Developer** (Maintainer if Paca should register the webhooks), scope **`api`**.
-   - Optionally a second token with scope **`read_repository`**, which Paca hands to `git clone` and `git fetch` instead of the full token.
-2. In Paca open **Admin → Git → GitLab → Set up** and paste the token(s). Choose a **webhook secret** (at least 16 random characters, e.g. `openssl rand -hex 32`). The form shows the webhook URL to use.
-3. On every GitLab project you link, add a **webhook** (*Settings → Webhooks*) with that URL, the same secret as *Secret token*, and the triggers **Push events, Comments, Issues events, Merge request events, Pipeline events**.
-4. Link the projects from each Paca project's **Settings → Git**.
+1. **Create a token** on GitLab, on the project or group the agents should work in: *Settings → Access tokens*, role **Maintainer**, scope **`api`**. The Maintainer role is what lets Paca register webhooks; with a lower role GitLab refuses (403) and no events reach Paca.
+2. In Paca open a project's **Settings → Git → Connections → Add GitLab** and paste the token. Choose who may use the connection: *This project only* or *All projects*. A project can have several connections (different groups, different hosts).
+3. Link the projects from the project's **Settings → Git → Repositories**. Paca registers the webhook on each GitLab project it links, with a secret it generated, and removes it when the last link goes. If registration fails, the repository says so: fix the token's role (create a new Maintainer token) and press *Try again*.
 
 An agent can have its own identity (its own bot user) from the agent's Git tab, set up the same way.
-
-> [!IMPORTANT]
-> Core does not call the provider's `EnsureWebhook` yet, so step 3 is manual for now. The provider implements it (`webhook_management`): once core registers hooks, step 3 disappears. A hook registered that way is created with the same secret and subscriptions as above.
 
 ### Self-managed GitLab
 
@@ -100,7 +94,7 @@ Enter the instance's host name (no scheme or path, a port is allowed) as the hos
 
 ## Upgrading from 0.5.x
 
-Migration `0002_git_provider.sql` **drops** the legacy tables (they only exist if the plugin's schema held them: see the ID note below) (`gitlab_integrations`, `gitlab_repositories`, `gitlab_merge_requests`, `gitlab_task_mr_links`, `gitlab_task_branches`). Nothing is migrated, because a project-bound token cannot back a provider identity, and repositories, merge-request links and branch links now live in Paca core.
+Migration `0002_git_provider.sql` **drops** the legacy tables (they only exist if the plugin's schema held them: see the ID note below): `gitlab_integrations`, `gitlab_repositories`, `gitlab_merge_requests`, `gitlab_task_mr_links`, `gitlab_task_branches`. Nothing is migrated, because a project-bound token has no webhook secret and cannot back a provider identity on its own, and repositories, merge-request links and branch links now live in Paca core. Add the token again from a project's Git settings.
 
 The plugin ID changed from `com.gorlix.gitlab` to `com.paca.gitlab`, so this installs as a new plugin with its own schema `plugin_data_com_paca_gitlab`. The old plugin's data stays in `plugin_data_com_gorlix_gitlab` untouched (and is not read); export anything you still need from there, then remove the old plugin. Afterwards set up a GitLab identity (above) and relink the projects in Paca.
 

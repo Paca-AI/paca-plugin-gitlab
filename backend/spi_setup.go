@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,21 +50,16 @@ func (p *glProvider) BeginIdentitySetup(_ context.Context, req gp.BeginSetupRequ
 		return gp.SetupStep{}, gp.Errorf(gp.CodeInternal, "could not start setup")
 	}
 
-	prompt := "Create a project or group access token on " + host + " with the api scope and the Developer role " +
-		"(a bot user is created for it), and paste it below. " +
-		"Then add a webhook to each project you link: URL " + req.WebhookURL + ", the secret token you choose below, " +
-		"and the triggers Push, Comments, Issues, Merge request and Pipeline events."
+	prompt := "Create a project or group access token on " + host + " with the Maintainer role and the api scope " +
+		"(a bot user is created for it), and paste it below. Paca uses it for the API and for git, " +
+		"and registers the webhook on each project you link, which is why it needs the Maintainer role."
 	return gp.SetupStep{
 		Kind:   gp.StepTokenForm,
 		Prompt: prompt,
 		State:  state,
 		Form: []gp.FormField{
 			{Name: fieldToken, Label: "Access token", Secret: true, Required: true,
-				Help: "Scope: api. Role: Developer or higher. Used for every API call and for git push."},
-			{Name: fieldReadToken, Label: "Read-only access token", Secret: true,
-				Help: "Optional. Scope: read_repository. Handed to git for clone and fetch instead of the access token above. It cannot be checked here: a wrong one only shows when git first uses it."},
-			{Name: fieldWebhookSecret, Label: "Webhook secret", Secret: true, Required: true,
-				Help: "A random string of at least 16 characters, for example from `openssl rand -hex 32`. Enter the same value as the webhook's Secret token."},
+				Help: "Role: Maintainer. Scope: api. Used for every API call, for git and to register webhooks."},
 		},
 	}, nil
 }
@@ -77,6 +73,7 @@ type glUser struct {
 
 // tokenInfo is what GitLab says about a token: its scopes and expiry.
 type tokenInfo struct {
+	UserID    int64    `json:"user_id"`
 	Scopes    []string `json:"scopes"`
 	ExpiresAt string   `json:"expires_at"` // a date, or null
 	Active    bool     `json:"active"`
@@ -104,27 +101,68 @@ func (t tokenInfo) hasScope(s string) bool {
 }
 
 // validateToken proves a token against the instance. A token GitLab rejects is a
-// validation error here (the user mistyped it), not a forbidden call.
+// validation error here (the user mistyped it), not a forbidden call, and the
+// message says what GitLab answered so the cause (a wrong host, an expired
+// token, a missing scope) can be told apart.
+//
+// GET /user is what names the token's user, but GitLab refuses it to tokens
+// without the read_user or api scope (some bot tokens among them). Such a token
+// can still ask who it is through /personal_access_tokens/self, and the user is
+// then read from /users/:id.
 func validateToken(api *glAPI, requireAPI bool) (glUser, tokenInfo, error) {
 	var u glUser
-	if err := api.get("/user", &u); err != nil {
+	var info tokenInfo
+	haveInfo := false
+	status, body, _, err := api.doRaw("GET", "/user", nil)
+	if err != nil {
 		switch gp.AsError(err).Code {
-		case gp.CodeForbidden, gp.CodeNotFound:
-			return glUser{}, tokenInfo{}, gp.Errorf(gp.CodeValidation, "GitLab rejected the token: check that it is correct, unexpired and has the api scope")
 		case gp.CodeTransient:
 			return glUser{}, tokenInfo{}, gp.Errorf(gp.CodeTransient, "could not reach the GitLab host: self-hosted instances must be listed in the plugin's allowedOutboundDomains")
+		case gp.CodeForbidden, gp.CodeNotFound:
+			if status == 401 {
+				return glUser{}, tokenInfo{}, rejectedToken(status, body)
+			}
+			// Not allowed to read /user: ask the token about itself instead.
+			if ierr := api.get("/personal_access_tokens/self", &info); ierr != nil || info.UserID == 0 {
+				return glUser{}, tokenInfo{}, rejectedToken(status, body)
+			}
+			haveInfo = true
+			if uerr := api.get("/users/"+strconv.FormatInt(info.UserID, 10), &u); uerr != nil {
+				return glUser{}, tokenInfo{}, rejectedToken(status, body)
+			}
+		default:
+			return glUser{}, tokenInfo{}, err
 		}
-		return glUser{}, tokenInfo{}, err
+	} else if derr := decodeInto(body, &u); derr != nil {
+		return glUser{}, tokenInfo{}, derr
 	}
 	if u.Username == "" {
 		return glUser{}, tokenInfo{}, gp.Errorf(gp.CodeInternal, "GitLab returned an incomplete user")
 	}
-	var info tokenInfo
 	// Older instances do not have this endpoint; the token still works without it.
-	if err := api.get("/personal_access_tokens/self", &info); err == nil && requireAPI && len(info.Scopes) > 0 && !info.hasScope("api") {
-		return glUser{}, tokenInfo{}, gp.Errorf(gp.CodeValidation, "the token needs the api scope")
+	if !haveInfo {
+		_ = api.get("/personal_access_tokens/self", &info)
+	}
+	if requireAPI && len(info.Scopes) > 0 && !info.hasScope("api") {
+		return glUser{}, tokenInfo{}, gp.Errorf(gp.CodeValidation, "the token needs the api scope (it has %s)", strings.Join(info.Scopes, ", "))
 	}
 	return u, info, nil
+}
+
+// rejectedToken is the validation error for a token GitLab would not accept,
+// quoting GitLab's own words and status.
+func rejectedToken(status int, body string) error {
+	detail := clip(errorMessage(body))
+	if detail == "" {
+		detail = "no details"
+	}
+	if status == 403 && strings.Contains(strings.ToLower(detail), "insufficient_scope") {
+		return gp.Errorf(gp.CodeValidation,
+			"GitLab says the token's scopes are not enough (HTTP 403: insufficient_scope). Create the access token with the api scope (read_repository or write_repository alone are not enough) and paste the new one")
+	}
+	return gp.Errorf(gp.CodeValidation,
+		"GitLab rejected the token (HTTP %d: %s). Check that the token is correct and unexpired, has the api scope, and that the host is the GitLab instance it was created on",
+		status, detail)
 }
 
 // CompleteIdentitySetup implements gp.Provider.
@@ -134,7 +172,13 @@ func (p *glProvider) CompleteIdentitySetup(_ context.Context, req gp.CompleteSet
 	if strings.TrimSpace(req.State) == "" || token == "" {
 		return gp.Identity{}, gp.Errorf(gp.CodeValidation, "state and token are required")
 	}
-	if len(secret) < minWebhookSecretLen {
+	switch {
+	case secret == "":
+		var err error
+		if secret, err = randomHex(32); err != nil {
+			return gp.Identity{}, gp.Errorf(gp.CodeInternal, "could not generate a webhook secret")
+		}
+	case len(secret) < minWebhookSecretLen:
 		return gp.Identity{}, gp.Errorf(gp.CodeValidation, "the webhook secret must be at least %d characters", minWebhookSecretLen)
 	}
 	s, err := p.store.loadSetup(req.State)
@@ -186,7 +230,7 @@ func identityOf(rec identityRecord) gp.Identity {
 		name = rec.Username
 	}
 	return gp.Identity{
-		Ref:         gp.IdentityRef{ID: rec.ID, Handle: rec.Username, ProviderRef: providerRef(map[string]any{"user_id": rec.UserID})},
+		Ref:         gp.IdentityRef{ID: rec.ID, Handle: rec.mentionHandle(), ProviderRef: providerRef(map[string]any{"user_id": rec.UserID})},
 		Host:        rec.Host,
 		Kind:        kind,
 		DisplayName: name,
@@ -198,12 +242,8 @@ func identityOf(rec identityRecord) gp.Identity {
 // access token itself stays valid on GitLab (revoking it needs a higher scope
 // than the token has); the operator revokes it there.
 func (p *glProvider) DeleteIdentity(_ context.Context, req gp.DeleteIdentityRequest) (gp.Empty, error) {
-	if _, err := p.loadIdentity(req.Identity.ID); err != nil {
-		if gp.AsError(err).Code == gp.CodeNotFound {
-			return gp.Empty{}, nil // already gone
-		}
-		return gp.Empty{}, err
-	}
+	// Forgetting an identity must not depend on being able to read it: a row
+	// that cannot be loaded is exactly one an operator wants gone.
 	if err := p.store.deleteIdentity(req.Identity.ID); err != nil {
 		return gp.Empty{}, gp.Errorf(gp.CodeInternal, "could not delete the identity")
 	}

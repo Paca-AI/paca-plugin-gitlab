@@ -234,7 +234,9 @@ func (g *fakeGitLab) route(method string, segs []string, q url.Values, tok strin
 		if tok == "glpat-readonly-scope" {
 			scopes = []string{"read_api"}
 		}
-		return resp(200, map[string]any{"scopes": scopes, "expires_at": "2030-06-01", "active": true})
+		return resp(200, map[string]any{"user_id": 77, "scopes": scopes, "expires_at": "2030-06-01", "active": true})
+	case method == "GET" && len(segs) == 2 && segs[0] == "users" && segs[1] == "77":
+		return resp(200, map[string]any{"id": 77, "username": "project_1_bot_ab12", "name": "Paca Bot", "bot": true})
 	case method == "GET" && len(segs) == 1 && segs[0] == "users":
 		name := q.Get("username")
 		if id, ok := fakeUsers[name]; ok {

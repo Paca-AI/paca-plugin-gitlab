@@ -30,8 +30,11 @@ func newGLProvider(store spiStore) *glProvider {
 //   - credentials are static: core never hands them to an agent and API calls
 //     are made here, server-side;
 //   - webhooks are per project (GitLab's group hooks need a paid tier), so
-//     webhook_management is implemented and users without the rights can paste
-//     the URL and secret by hand;
+//     webhook_management is implemented: core registers one when a project is
+//     linked, and users without the rights can paste the URL and secret by hand;
+//   - there is one way to connect (a pasted access token; whether it makes a
+//     bot user depends on the token), so Kinds is left empty and the UI offers
+//     no choice of kind;
 //   - review is emulated (one discussion per inline comment, then a summary);
 //   - reactions and access_grants are not implemented: a reaction names only a
 //     comment id, which GitLab cannot address without its merge request, and a
@@ -265,8 +268,12 @@ func (p *glProvider) ResolveRepository(_ context.Context, req gp.ResolveRepoRequ
 	for _, c := range req.Candidates {
 		rec, err := p.loadIdentity(c.ID)
 		if err != nil {
-			last = err
-			continue
+			if gp.AsError(err).Code == gp.CodeNotFound {
+				last = err
+				continue
+			}
+			// A broken store is not "no identity can see it": say so.
+			return gp.ResolvedRepository{}, err
 		}
 		if want != "" && !strings.EqualFold(rec.Host, want) {
 			continue // another host's identity cannot see this project
@@ -283,7 +290,7 @@ func (p *glProvider) ResolveRepository(_ context.Context, req gp.ResolveRepoRequ
 		// nothing about being a member; a credential is still minted for it.
 		return gp.ResolvedRepository{
 			Repository: repositoryOf(rec.Host, g),
-			Identity:   gp.IdentityRef{ID: rec.ID, Handle: rec.Username},
+			Identity:   gp.IdentityRef{ID: rec.ID, Handle: rec.mentionHandle()},
 		}, nil
 	}
 	if last != nil && gp.AsError(last).Code == gp.CodeForbidden {

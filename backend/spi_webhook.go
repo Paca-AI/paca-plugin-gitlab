@@ -171,7 +171,7 @@ func (d *delivery) finish(ev gp.Event, parts ...string) gp.Event {
 }
 
 func (d *delivery) mention(text string) []gp.Addressed {
-	if mentionsHandle(text, d.rec.Username) {
+	if mentionsHandle(text, d.rec.mentionHandle()) {
 		return []gp.Addressed{{IdentityID: d.rec.ID, Via: gp.ViaMention}}
 	}
 	return nil
