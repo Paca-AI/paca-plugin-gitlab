@@ -51,7 +51,7 @@ The plugin has no HTTP routes of its own: core calls the internal-only `POST /_g
 
 ## Setting it up
 
-1. **Create a token** on GitLab, on the project or group the agents should work in: *Settings → Access tokens*, role **Maintainer**, scope **`api`**. The Maintainer role is what lets Paca register webhooks; with a lower role GitLab refuses (403) and no events reach Paca.
+1. **Create a token** on GitLab, on the project or group the agents should work in: *Settings → Access tokens*, role **Maintainer**, scope **`api`**. The Maintainer role is what lets Paca register webhooks; with a lower role GitLab refuses (403) and no events reach Paca. On GitLab.com, project and group access tokens need the Premium or Ultimate tier; on Free, use a personal access token (ideally of a dedicated user that is a Maintainer of the projects).
 2. In Paca open a project's **Settings → Git → Connections → Add GitLab** and paste the token. Choose who may use the connection: *This project only* or *All projects*. A project can have several connections (different groups, different hosts).
 3. Link the projects from the project's **Settings → Git → Repositories**. Paca registers the webhook on each GitLab project it links, with a secret it generated, and removes it when the last link goes. If registration fails, the repository says so: fix the token's role (create a new Maintainer token) and press *Try again*.
 
@@ -59,7 +59,24 @@ An agent can have its own identity (its own bot user) from the agent's Git tab, 
 
 ### Self-managed GitLab
 
-Enter the instance's host name (no scheme or path, a port is allowed) as the host. Plugin outbound calls are limited to the hosts in `allowedOutboundDomains` (`plugin.json`), HTTPS only, and never to private or internal addresses. Add your host to that list (or use `"*"`) before setting up the identity.
+Enter the instance's host name (no scheme or path, a port is allowed) as the host. Then check both directions of traffic:
+
+**Paca → GitLab (API calls).** Plugin outbound calls are limited to the hosts in `allowedOutboundDomains` (`plugin.json`), HTTPS only, and never to private or internal addresses.
+
+1. Add your host to `allowedOutboundDomains` in `plugin.json` (or use `"*"`), for example `["gitlab.com", "gitlab.example.com"]`.
+2. Install or upgrade the plugin with that `plugin.json`: the list is read from the installed manifest, so editing it afterwards has no effect until the plugin is installed again.
+3. Set up the identity.
+
+Two limits come from core, not from this plugin:
+
+- The host must resolve to a public address. A GitLab reachable only on a private network or VPN (`10.x`, `192.168.x`, …) is refused even when listed; see Paca-AI/paca#656 for the proposal to allow it.
+- The certificate must be trusted by the Paca API container. With an internal CA, add it to the container's trust store.
+
+**GitLab → Paca (webhooks).** The webhook URL is built from Paca's `PUBLIC_URL`, so it must be reachable from the GitLab instance.
+
+- A GitLab instance refuses hooks to local-network addresses by default. If Paca is on your network, enable *Admin → Settings → Network → Outbound requests → Allow requests to the local network from webhooks and integrations* (or add Paca's host to the allowlist there).
+- If registration fails, the repository shows a notice: fix the cause and press *Try again*.
+- Don't edit Paca's hook by hand in GitLab: changing its URL clears the secret token, and events then fail verification. To fix a hook, press *Try again* in Paca, which updates the hook (or creates a new one) with the secret.
 
 ---
 
