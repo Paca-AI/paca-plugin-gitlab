@@ -28,11 +28,6 @@ jobs:
           curl -sL -o /tmp/tinygo.deb https://github.com/tinygo-org/tinygo/releases/download/v0.41.1/tinygo_0.41.1_amd64.deb
           sudo dpkg -i /tmp/tinygo.deb
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - name: Build backend WASM
         working-directory: backend
         run: |
@@ -40,34 +35,12 @@ jobs:
           mkdir -p ../release/backend
           tinygo build -target=wasip1 -buildmode=c-shared -o ../release/backend/gitlab.wasm .
 
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Build MCP
-        working-directory: mcp
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile
-          bun run build
-
+      # The plugin is provider-only: a backend, its migrations and the manifest.
       - name: Collect release files
         run: |
           set -euo pipefail
-          mkdir -p release/frontend
-          cp -R frontend/dist release/frontend/dist
-
-          mkdir -p release/mcp
-          cp -R mcp/dist release/mcp/dist
-
           mkdir -p release/migrations
           cp -R backend/migrations/. release/migrations/
-
-          mkdir -p release/skills
-          cp -R skills/. release/skills/
 
           cp plugin.json release/plugin.json
 
@@ -75,31 +48,22 @@ jobs:
         run: |
           set -euo pipefail
           tar -czf gitlab-backend-wasm.tar.gz -C release/backend gitlab.wasm
-          tar -czf gitlab-frontend-dist.tar.gz -C release/frontend dist
-          tar -czf gitlab-mcp-dist.tar.gz -C release/mcp dist
           tar -czf gitlab-migrations.tar.gz -C release migrations
-          tar -czf gitlab-skills-bundle.tar.gz -C release skills
           tar -czf gitlab-plugin-manifest.tar.gz -C release plugin.json
 
       - name: Generate checksums
         run: |
           set -euo pipefail
           sha256sum gitlab-backend-wasm.tar.gz \
-            gitlab-frontend-dist.tar.gz \
-            gitlab-mcp-dist.tar.gz \
             gitlab-migrations.tar.gz \
-            gitlab-skills-bundle.tar.gz \
             gitlab-plugin-manifest.tar.gz > checksums.txt
 
-      - name: Publish GitHub Release assets
+      - name: Publish GitLab Release assets
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
             gitlab-backend-wasm.tar.gz
-            gitlab-frontend-dist.tar.gz
-            gitlab-mcp-dist.tar.gz
             gitlab-migrations.tar.gz
-            gitlab-skills-bundle.tar.gz
             gitlab-plugin-manifest.tar.gz
             checksums.txt

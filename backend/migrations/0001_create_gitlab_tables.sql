@@ -1,6 +1,6 @@
 -- 0001_create_gitlab_tables.sql
 -- Creates the GitLab integration tables in the plugin schema.
--- Run with search_path = plugin_data_com_gorlix_gitlab, public.
+-- Run with search_path = plugin_data_com_paca_gitlab, public.
 
 CREATE TABLE IF NOT EXISTS gitlab_integrations (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
