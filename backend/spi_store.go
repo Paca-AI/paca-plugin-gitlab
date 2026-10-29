@@ -36,7 +36,7 @@ var errNoSuchIdentity = errors.New("gitlab identity not found")
 var errNoSuchSetup = errors.New("setup session not found")
 
 // errUndecryptable is a stored secret the instance key does not open: the key
-// changed, or the row came from a plugin configured with another one.
+// changed since the row was stored.
 var errUndecryptable = errors.New("gitlab identity secret cannot be decrypted")
 
 // identityRecord is one GitLab access-token identity.

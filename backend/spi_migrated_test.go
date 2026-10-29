@@ -148,8 +148,8 @@ func (undecryptableStore) loadIdentity(string) (identityRecord, error) {
 	return identityRecord{}, errors.Join(errUndecryptable, errors.New("cipher: message authentication failed"))
 }
 
-// A token stored under another ENCRYPTION_KEY (the old plugin's, say) gets an
-// error naming the key, not a generic failure.
+// A token stored under another ENCRYPTION_KEY gets an error naming the key,
+// not a generic failure.
 func TestMigratedIdentity_WrongEncryptionKey(t *testing.T) {
 	p := newGLProvider(undecryptableStore{newMemStore()})
 	_, err := p.loadIdentity("migrated-1")

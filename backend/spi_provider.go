@@ -98,8 +98,8 @@ func (p *glProvider) loadIdentity(identityID string) (identityRecord, error) {
 			return identityRecord{}, notFoundIdentity()
 		case errors.Is(err, errUndecryptable):
 			return identityRecord{}, gp.Errorf(gp.CodeInternal,
-				"the stored GitLab token cannot be decrypted: the plugin's ENCRYPTION_KEY is not the one it was stored with "+
-					"(after an upgrade from the 0.5.x plugin, set the key that plugin used), or connect GitLab again")
+				"the stored GitLab token cannot be decrypted: the instance's ENCRYPTION_KEY is not the one it was stored with; "+
+					"restore that key, or connect GitLab again")
 		}
 		return identityRecord{}, gp.Errorf(gp.CodeInternal, "could not load the GitLab identity")
 	}

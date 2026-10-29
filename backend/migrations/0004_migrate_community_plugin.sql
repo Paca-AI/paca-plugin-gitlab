@@ -85,8 +85,8 @@ BEGIN
             FROM %1$I.gitlab_task_branches b JOIN pg_temp.legacy_repositories r ON r.src = %1$L AND r.id = b.repo_id$q$, src);
     END LOOP;
 
-    -- The ciphertexts are copied as they are: the community plugin encrypted
-    -- with its ENCRYPTION_KEY the same way, so this one needs the key it used.
+    -- The ciphertexts are copied as they are: the same ENCRYPTION_KEY (the
+    -- instance's, which core hands every plugin) protects both.
     -- host is the host (and port) of the instance URL; the API is always https.
     INSERT INTO gitlab_identities (id, host, username, token_enc, created_by)
     SELECT i.id,
