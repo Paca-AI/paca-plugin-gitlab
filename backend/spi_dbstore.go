@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	plugin "github.com/Paca-AI/plugin-sdk-go"
@@ -35,7 +36,11 @@ func (s dbStore) loadIdentity(id string) (identityRecord, error) {
 		if enc == "" {
 			return "", nil
 		}
-		return s.p.decrypt(enc)
+		v, err := s.p.decrypt(enc)
+		if err != nil {
+			return "", fmt.Errorf("%w: %s: %v", errUndecryptable, col, err)
+		}
+		return v, nil
 	}
 	token, err := open("token_enc")
 	if err != nil {
@@ -107,6 +112,55 @@ func (s dbStore) deleteIdentity(id string) error {
 func (s dbStore) saveReach(id string, r tokenReach) error {
 	_, err := s.db.Exec(`UPDATE gitlab_identities SET token_type = $2, resource_id = $3, resource_path = $4, updated_at = $5 WHERE id = $1`,
 		id, r.Type, r.ResourceID, r.Path, nowStr())
+	return err
+}
+
+func (s dbStore) completeIdentity(x identityRecord) error {
+	secret := ""
+	if x.WebhookSecret != "" {
+		var err error
+		if secret, err = s.p.encrypt(x.WebhookSecret); err != nil {
+			return err
+		}
+	}
+	var expires any
+	if !x.ExpiresAt.IsZero() {
+		expires = x.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	// Every CASE reads the row as it was before this statement, so the user
+	// fields are written together, and only while the username is still blank.
+	_, err := s.db.Exec(`
+		UPDATE gitlab_identities SET
+			user_id            = CASE WHEN username = '' THEN $2 ELSE user_id END,
+			username           = CASE WHEN username = '' THEN $3 ELSE username END,
+			display_name       = CASE WHEN username = '' THEN $4 ELSE display_name END,
+			bot                = CASE WHEN username = '' THEN $5 ELSE bot END,
+			expires_at         = CASE WHEN username = '' THEN $6::timestamptz ELSE expires_at END,
+			webhook_secret_enc = CASE WHEN webhook_secret_enc = '' THEN $7 ELSE webhook_secret_enc END,
+			updated_at         = $8
+		WHERE id = $1`,
+		x.ID, x.UserID, x.Username, x.Name, x.Bot, expires, secret, nowStr())
+	return err
+}
+
+func (s dbStore) legacyWebhooks(identityID string, gitlabProjectID int64, fullPath string) ([]legacyWebhook, error) {
+	r, err := s.db.Query(`
+		SELECT gitlab_project_id, full_path, webhook_id FROM gitlab_legacy_webhooks
+		WHERE identity_id = $1 AND (($2 > 0 AND gitlab_project_id = $2) OR lower(full_path) = lower($3))`,
+		identityID, gitlabProjectID, fullPath)
+	if err != nil {
+		return nil, err
+	}
+	var out []legacyWebhook
+	for _, row := range r.Rows {
+		sc := newRowScanner(r.Columns, row)
+		out = append(out, legacyWebhook{GitLabProjectID: sc.int64Val("gitlab_project_id"), FullPath: sc.str("full_path"), WebhookID: sc.int64Val("webhook_id")})
+	}
+	return out, nil
+}
+
+func (s dbStore) forgetLegacyWebhook(identityID string, webhookID int64) error {
+	_, err := s.db.Exec(`DELETE FROM gitlab_legacy_webhooks WHERE identity_id = $1 AND webhook_id = $2`, identityID, webhookID)
 	return err
 }
 

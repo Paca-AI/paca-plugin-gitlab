@@ -36,7 +36,7 @@ The plugin has no HTTP routes of its own: core calls the internal-only `POST /_g
 ### Backend
 
 - `spi_*.go` implement the provider operations; the SDK conformance suite (`spi_conformance_test.go`) runs them against a fake GitLab (`spi_fakegitlab_test.go`), and `spi_test.go` / `spi_ops_test.go` cover the GitLab-specific behaviour.
-- Owns the schema `plugin_data_com_paca_gitlab` (`gitlab_identities`, `gitlab_setup_sessions`). Access tokens and webhook secrets are stored encrypted with AES-256-GCM using the `ENCRYPTION_KEY` config value.
+- Owns the schema `plugin_data_com_paca_gitlab` (`gitlab_identities`, `gitlab_setup_sessions`, and `gitlab_legacy_webhooks` for an upgrade from 0.5.x). Access tokens and webhook secrets are stored encrypted with AES-256-GCM using the `ENCRYPTION_KEY` config value.
 - Personal access tokens work, but the recommended identity is a **project or group access token**: GitLab creates a bot user for it, which can be mentioned and is limited to that project or group.
 
 ### Configuration
@@ -111,11 +111,63 @@ Two limits come from core, not from this plugin:
 
 ## Upgrading from 0.5.x
 
-Migration `0002_git_provider.sql` **drops** the legacy tables (they only exist if the plugin's schema held them: see the ID note below): `gitlab_integrations`, `gitlab_repositories`, `gitlab_merge_requests`, `gitlab_task_mr_links`, `gitlab_task_branches`. Nothing is migrated, because a project-bound token has no webhook secret and cannot back a provider identity on its own, and repositories, merge-request links and branch links now live in Paca core. Add the token again from a project's Git settings.
+The community plugin (0.5.x) is migrated: migration `0004_migrate_community_plugin.sql` carries its data over to Paca core when the plugin is installed or upgraded.
 
-The plugin ID changed from `com.gorlix.gitlab` to `com.paca.gitlab`, so this installs as a new plugin with its own schema `plugin_data_com_paca_gitlab`. The old plugin's data stays in `plugin_data_com_gorlix_gitlab` untouched (and is not read); export anything you still need from there, then remove the old plugin. Afterwards set up a GitLab identity (above) and relink the projects in Paca.
+### What is carried over
 
-The plugin's own screens, MCP tools, automation nodes (`gitlab.mr_linked`, `gitlab.merge_mr`, …), custom permission `gitlab.manage` and the `paca-gitlab-workflow` skill are gone: core's Git integration (neutral `change_request_*` / `review_*` tools, `git:*` permissions, Git triggers on agents) replaces them. Flows that used the old automation nodes need rebuilding on core's Git triggers.
+| 0.5.x | After the upgrade |
+|---|---|
+| A project's access token | A connection of that project (*This project only*) in **Settings → Git → Connections**, with the same token. |
+| Linked repositories | Linked repositories of the project, through that connection. A repository already linked by hand is kept as it is. |
+| Merge requests and their links to tasks | Change requests in core, linked to the same tasks. |
+| Branches linked to tasks | The same branch links. |
+
+What is not known at migration time is filled in the first time the connection is used: the token's user is asked of GitLab, a webhook secret is generated and the token's kind (personal, project, group) is read from GitLab. A token that GitLab no longer accepts (revoked, expired) reports *connect GitLab again*: add a new connection with a new token.
+
+Not carried over: the plugin's own screens, MCP tools, automation nodes (`gitlab.mr_linked`, `gitlab.merge_mr`, …), the `gitlab.manage` permission and the `paca-gitlab-workflow` skill. Core's Git integration replaces them (neutral `change_request_*` / `review_*` tools, `git:*` permissions, Git triggers on agents); flows that used the old automation nodes need rebuilding on core's Git triggers.
+
+The tokens are copied encrypted, as they are: they stay readable as long as the instance's `ENCRYPTION_KEY` is the one they were stored with. If the key changed, the connection says so; restore the key or add the token again.
+
+### Webhooks
+
+The webhooks 0.5.x registered on GitLab point at the old plugin, and they stop working with it. For each linked repository, open **Settings → Git → Repositories** and press *Try again*: Paca registers its new hook, and once that has worked it deletes the old plugin's hook from the GitLab project. Only a hook whose URL is still the old plugin's (`…/api/v1/plugins/com.gorlix.gitlab/projects/…/webhook`) is deleted; one that was pointed somewhere else is left alone. If the new hook cannot be registered, the old one stays.
+
+### Order of the steps
+
+0.5.0 and 0.5.1 already had the id `com.paca.gitlab`, 0.5.2 had `com.gorlix.gitlab`. Check which one you run in Paca's plugin list.
+
+1. **Back up the database** (below). The migration cannot be undone without it.
+2. Install this plugin:
+   - from **0.5.0 or 0.5.1**: upgrade the plugin in place. The old tables in `plugin_data_com_paca_gitlab` are carried over and then dropped.
+   - from **0.5.2**: install `com.paca.gitlab` **before** removing `com.gorlix.gitlab`. The data is read from `plugin_data_com_gorlix_gitlab`, which is left untouched.
+3. Check a project that used GitLab: its connection, its repositories, and the merge requests and branches on its tasks.
+4. Press *Try again* on each repository (see Webhooks).
+5. Only then remove `com.gorlix.gitlab` (0.5.2). Paca keeps its schema `plugin_data_com_gorlix_gitlab` after the plugin is removed; drop it by hand once you no longer need it.
+
+### Backup and rollback
+
+Take a backup right before the upgrade, and check that it can be read. With the bundled Postgres of `deploy/docker-compose.prod.yml`:
+
+```sh
+docker compose -f deploy/docker-compose.prod.yml exec -T postgres \
+  pg_dump -U paca -d paca -Fc > paca-before-gitlab-0.6.dump
+docker run --rm -v "$PWD":/d:ro postgres:16 pg_restore -l /d/paca-before-gitlab-0.6.dump | head
+```
+
+With a managed database, run `pg_dump "$DATABASE_URL" -Fc` instead. The dump holds the encrypted tokens: keep it as private as the database.
+
+To roll back, stop the API, restore the dump and reinstall the plugin version you had:
+
+```sh
+docker compose -f deploy/docker-compose.prod.yml stop api
+docker compose -f deploy/docker-compose.prod.yml exec -T postgres dropdb -U paca --force paca
+docker compose -f deploy/docker-compose.prod.yml exec -T postgres createdb -U paca paca
+docker compose -f deploy/docker-compose.prod.yml exec -T postgres \
+  pg_restore -U paca -d paca --no-owner < paca-before-gitlab-0.6.dump
+docker compose -f deploy/docker-compose.prod.yml start api
+```
+
+Replace `paca` with your `POSTGRES_USER` and `POSTGRES_DB` if you changed them. A restore also brings back everything else as it was at the time of the dump, so roll back soon after the upgrade. Hooks that *Try again* deleted on GitLab are not restored with the database; register them again from the old plugin if you go back to it.
 
 ---
 
@@ -131,6 +183,12 @@ Thank you to [Gorlix](https://github.com/gorlix), who created this plugin ([`gor
 cd backend
 go vet ./... && go test -race ./...
 tinygo build -target=wasip1 -buildmode=c-shared -o backend.wasm .
+```
+
+The migration from 0.5.x is tested against a real Postgres 16 (in docker) with core's Git tables, taken from a Paca checkout:
+
+```bash
+PACA_CORE=/path/to/paca scripts/test-legacy-migration/run.sh
 ```
 
 To install into a local development Paca instance, use Paca's development script:

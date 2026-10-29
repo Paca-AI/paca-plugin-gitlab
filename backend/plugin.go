@@ -22,7 +22,9 @@ func (p *gitlabPlugin) Init(ctx *plugin.Context) error {
 	p.db = ctx.DB()
 	p.log = ctx.Log()
 	p.cfg = ctx.Config()
-	serve.Register(ctx, newGLProvider(newDBStore(p)))
+	prov := newGLProvider(newDBStore(p))
+	prov.warn = p.log.Warn
+	serve.Register(ctx, prov)
 	return nil
 }
 

@@ -353,7 +353,7 @@ func TestOptionalOps_ArgumentChecks(t *testing.T) {
 }
 
 func TestWebhookManagement_UpdatesInsteadOfDuplicating(t *testing.T) {
-	p, g, st := seededProvider(t)
+	p, g, _ := seededProvider(t)
 	req := gp.EnsureWebhookRequest{Target: fixtureTarget, URL: "https://paca.test/api/v1/git/webhooks/abc"}
 	a, err := p.EnsureWebhook(bg, req)
 	if err != nil {
@@ -378,12 +378,6 @@ func TestWebhookManagement_UpdatesInsteadOfDuplicating(t *testing.T) {
 	g.forceError["POST /projects/1/hooks"] = fakeResponse{status: 403, body: `{"message":"403 Forbidden"}`}
 	_, err = p.EnsureWebhook(bg, gp.EnsureWebhookRequest{Target: fixtureTarget, URL: "https://paca.test/api/v1/git/webhooks/ghi"})
 	code(t, err, gp.CodeForbidden)
-
-	rec := st.identities[fakeIdentityID]
-	rec.WebhookSecret = ""
-	st.identities[fakeIdentityID] = rec
-	_, err = p.EnsureWebhook(bg, req)
-	code(t, err, gp.CodeConflict)
 }
 
 func TestDeleteIdentity_ForgetsTheTokens(t *testing.T) {

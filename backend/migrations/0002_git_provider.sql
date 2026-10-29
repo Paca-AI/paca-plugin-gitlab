@@ -1,8 +1,7 @@
 -- 0002_git_provider.sql
 -- The GitLab provider's own state: the access-token identities Paca connects
 -- with (tokens and webhook secrets encrypted) and the setup sessions that tie a
--- token-form round trip together. Drops the previous release's project-bound
--- tables (see the end).
+-- token-form round trip together.
 -- Run with search_path = plugin_data_com_paca_gitlab, public.
 
 CREATE TABLE IF NOT EXISTS gitlab_identities (
@@ -37,11 +36,6 @@ CREATE TABLE IF NOT EXISTS gitlab_setup_sessions (
 
 -- The plugin is a Git provider: repositories, merge requests, task links and the
 -- per-project connection now live in Paca core (git_* tables). The previous
--- release's project-bound tables are dropped; a project-scoped token cannot back
--- a provider identity on its own (it has no webhook secret), so nothing is
--- migrated.
-DROP TABLE IF EXISTS gitlab_task_mr_links;
-DROP TABLE IF EXISTS gitlab_task_branches;
-DROP TABLE IF EXISTS gitlab_merge_requests;
-DROP TABLE IF EXISTS gitlab_repositories;
-DROP TABLE IF EXISTS gitlab_integrations;
+-- release's project-bound tables (0001) are kept here until
+-- 0004_migrate_community_plugin.sql has carried their rows over to core, and
+-- dropped there.

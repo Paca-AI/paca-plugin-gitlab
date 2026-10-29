@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,10 +21,12 @@ import (
 type glProvider struct {
 	store spiStore
 	now   func() time.Time
+	// warn reports what an operator may want to know but no caller can act on.
+	warn func(msg string)
 }
 
 func newGLProvider(store spiStore) *glProvider {
-	return &glProvider{store: store, now: time.Now}
+	return &glProvider{store: store, now: time.Now, warn: func(string) {}}
 }
 
 // Describe implements gp.Provider. Capabilities are declared honestly:
@@ -90,10 +93,20 @@ func (p *glProvider) loadIdentity(identityID string) (identityRecord, error) {
 	}
 	rec, err := p.store.loadIdentity(identityID)
 	if err != nil {
-		if err == errNoSuchIdentity {
+		switch {
+		case errors.Is(err, errNoSuchIdentity):
 			return identityRecord{}, notFoundIdentity()
+		case errors.Is(err, errUndecryptable):
+			return identityRecord{}, gp.Errorf(gp.CodeInternal,
+				"the stored GitLab token cannot be decrypted: the instance's ENCRYPTION_KEY is not the one it was stored with; "+
+					"restore that key, or connect GitLab again")
 		}
 		return identityRecord{}, gp.Errorf(gp.CodeInternal, "could not load the GitLab identity")
+	}
+	if rec.Username == "" || rec.WebhookSecret == "" {
+		if err := p.completeMigratedIdentity(&rec); err != nil {
+			return identityRecord{}, err
+		}
 	}
 	if rec.Reach.Type == "" {
 		// Stored before token types were recorded: classify from the username
@@ -104,6 +117,47 @@ func (p *glProvider) loadIdentity(identityID string) (identityRecord, error) {
 		}
 	}
 	return rec, nil
+}
+
+// completeMigratedIdentity fills in what an identity carried over from the
+// community plugin (0.5.x) lacks: the token's user (asked of GitLab) and a
+// webhook secret (generated; the old per-repository secrets belonged to hooks
+// that pointed at the old plugin). It runs on first use and stores the result;
+// the token's reach is classified afterwards like any unclassified identity.
+func (p *glProvider) completeMigratedIdentity(rec *identityRecord) error {
+	if rec.Username == "" {
+		// The token was checked when it was saved, possibly long ago: a token
+		// GitLab rejects now has to be replaced, not retried.
+		user, info, err := validateToken(rec.api(), false)
+		if err != nil {
+			if e := gp.AsError(err); e.Code == gp.CodeValidation {
+				return gp.Errorf(gp.CodeForbidden, "the access token carried over from the previous GitLab plugin no longer works (%s): connect GitLab again with a new token", e.Message)
+			}
+			return err
+		}
+		rec.UserID, rec.Username, rec.Name = user.ID, user.Username, user.Name
+		rec.Bot = user.Bot || accessTokenBotRe.MatchString(user.Username)
+		rec.ExpiresAt = info.expiry()
+	}
+	if rec.WebhookSecret == "" {
+		secret, err := randomHex(32)
+		if err != nil {
+			return gp.Errorf(gp.CodeInternal, "could not generate a webhook secret")
+		}
+		rec.WebhookSecret = secret
+	}
+	if err := p.store.completeIdentity(*rec); err != nil {
+		return gp.Errorf(gp.CodeInternal, "could not store the GitLab identity")
+	}
+	// completeIdentity only fills blanks, so a concurrent first use may have
+	// stored a different secret first: read back what won, or hooks signed with
+	// ours fail.
+	won, err := p.store.loadIdentity(rec.ID)
+	if err != nil {
+		return gp.Errorf(gp.CodeInternal, "could not load the GitLab identity")
+	}
+	*rec = won
+	return nil
 }
 
 func (r identityRecord) api() *glAPI { return &glAPI{base: baseURL(r.Host), token: r.Token} }
