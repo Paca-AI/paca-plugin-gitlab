@@ -185,6 +185,12 @@ go vet ./... && go test -race ./...
 tinygo build -target=wasip1 -buildmode=c-shared -o backend.wasm .
 ```
 
+The migration from 0.5.x is tested against a real Postgres 16 (in docker) with core's Git tables, taken from a Paca checkout:
+
+```bash
+PACA_CORE=/path/to/paca scripts/test-legacy-migration/run.sh
+```
+
 To install into a local development Paca instance, use Paca's development script:
 
 ```bash
