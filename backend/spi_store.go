@@ -14,6 +14,15 @@ type spiStore interface {
 	deleteIdentity(id string) error
 	// saveReach records what an identity's token covers (see identityRecord).
 	saveReach(id string, r tokenReach) error
+	// completeIdentity stores the user and webhook secret of an identity carried
+	// over from the community plugin (0.5.x). It only fills fields that are still
+	// blank, so a concurrent completion keeps whichever was stored first.
+	completeIdentity(r identityRecord) error
+	// legacyWebhooks lists the community plugin's hooks on a repository, by
+	// GitLab project id or path, still to be removed for the identity.
+	legacyWebhooks(identityID string, gitlabProjectID int64, fullPath string) ([]legacyWebhook, error)
+	// forgetLegacyWebhook records that a legacy hook was dealt with.
+	forgetLegacyWebhook(identityID string, webhookID int64) error
 
 	saveSetup(s setupSession) error
 	loadSetup(state string) (setupSession, error)
@@ -25,6 +34,10 @@ type spiStore interface {
 
 var errNoSuchIdentity = errors.New("gitlab identity not found")
 var errNoSuchSetup = errors.New("setup session not found")
+
+// errUndecryptable is a stored secret the instance key does not open: the key
+// changed, or the row came from a plugin configured with another one.
+var errUndecryptable = errors.New("gitlab identity secret cannot be decrypted")
 
 // identityRecord is one GitLab access-token identity.
 type identityRecord struct {

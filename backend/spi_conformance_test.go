@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,10 +18,12 @@ type memStore struct {
 	identities map[string]identityRecord
 	setups     map[string]setupSession
 	seq        int
+	// legacyHooks are each identity's community-plugin hooks still to remove.
+	legacyHooks map[string][]legacyWebhook
 }
 
 func newMemStore() *memStore {
-	return &memStore{identities: map[string]identityRecord{}, setups: map[string]setupSession{}}
+	return &memStore{identities: map[string]identityRecord{}, setups: map[string]setupSession{}, legacyHooks: map[string][]legacyWebhook{}}
 }
 
 func (m *memStore) loadIdentity(id string) (identityRecord, error) {
@@ -58,6 +61,48 @@ func (m *memStore) saveReach(id string, r tokenReach) error {
 	}
 	rec.Reach = r
 	m.identities[id] = rec
+	return nil
+}
+
+func (m *memStore) completeIdentity(r identityRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.identities[r.ID]
+	if !ok {
+		return errNoSuchIdentity
+	}
+	if rec.Username == "" {
+		rec.UserID, rec.Username, rec.Name, rec.Bot, rec.ExpiresAt = r.UserID, r.Username, r.Name, r.Bot, r.ExpiresAt
+	}
+	if rec.WebhookSecret == "" {
+		rec.WebhookSecret = r.WebhookSecret
+	}
+	m.identities[r.ID] = rec
+	return nil
+}
+
+func (m *memStore) legacyWebhooks(identityID string, gitlabProjectID int64, fullPath string) ([]legacyWebhook, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []legacyWebhook
+	for _, h := range m.legacyHooks[identityID] {
+		if (gitlabProjectID > 0 && h.GitLabProjectID == gitlabProjectID) || strings.EqualFold(h.FullPath, fullPath) {
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) forgetLegacyWebhook(identityID string, webhookID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.legacyHooks[identityID][:0]
+	for _, h := range m.legacyHooks[identityID] {
+		if h.WebhookID != webhookID {
+			kept = append(kept, h)
+		}
+	}
+	m.legacyHooks[identityID] = kept
 	return nil
 }
 

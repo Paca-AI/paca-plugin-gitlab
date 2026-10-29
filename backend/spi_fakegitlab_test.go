@@ -646,7 +646,10 @@ func (g *fakeGitLab) hookAPI(method string, rest []string, payload map[string]an
 		if _, ok := g.hooks[id]; !ok {
 			return notFound()
 		}
-		if method == "DELETE" {
+		switch method {
+		case "GET":
+			return resp(200, map[string]any{"id": id, "url": g.hooks[id]})
+		case "DELETE":
 			delete(g.hooks, id)
 			return text(204, "")
 		}

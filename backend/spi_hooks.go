@@ -44,15 +44,25 @@ func (p *glProvider) EnsureWebhook(_ context.Context, req gp.EnsureWebhookReques
 	if rec.WebhookSecret == "" {
 		return gp.WebhookRef{}, gp.Errorf(gp.CodeConflict, "the identity has no webhook secret")
 	}
-	api := rec.api()
-	body := hookBody(u.String(), rec.WebhookSecret)
+	ref, err := ensureHook(rec.api(), proj, u.String(), hookBody(u.String(), rec.WebhookSecret))
+	if err != nil {
+		return gp.WebhookRef{}, err
+	}
+	// Only now that the new hook is in place: a repository keeps its old hook
+	// until it has a working one.
+	p.removeLegacyHooks(rec, req.Target.Repo, proj)
+	return ref, nil
+}
+
+// ensureHook updates the project's hook that points at hookURL, or creates one.
+func ensureHook(api *glAPI, proj, hookURL string, body map[string]any) (gp.WebhookRef, error) {
 	for pg := 1; pg <= maxHookPages; pg++ {
 		var hooks []glHook
 		if err := api.get(paged(proj+"/hooks", pg), &hooks); err != nil {
 			return gp.WebhookRef{}, err
 		}
 		for _, h := range hooks {
-			if h.URL == u.String() {
+			if h.URL == hookURL {
 				if err := api.send("PUT", proj+"/hooks/"+strconv.FormatInt(h.ID, 10), body, nil); err != nil {
 					return gp.WebhookRef{}, err
 				}
