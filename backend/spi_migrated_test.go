@@ -286,3 +286,70 @@ func TestIsLegacyHookURL(t *testing.T) {
 		}
 	}
 }
+
+// DescribeIdentity gives core the handle of a migrated identity: GitLab is
+// asked once, the answer is stored, and the next call is answered from it.
+func TestDescribeIdentity_MigratedFillsAndPersists(t *testing.T) {
+	g := newFakeGitLab(t)
+	st := newMemStore()
+	p := newGLProvider(st)
+	ref := migratedIdentity(st, "migrated-1", fakeProjectToken)
+
+	got, err := p.DescribeIdentity(bg, gp.DescribeIdentityRequest{Identity: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Ref.ID != "migrated-1" || got.Ref.Handle != "project_4_bot_ab12" {
+		t.Errorf("ref %+v", got.Ref)
+	}
+	if got.Kind != gp.IdentityBotUser || got.Host != fakeHost || got.DisplayName != "Project token · acme/ui" || got.ExpiresAt.IsZero() {
+		t.Errorf("identity %+v", got)
+	}
+	if rec := st.identities["migrated-1"]; rec.Username != got.Ref.Handle || rec.WebhookSecret == "" {
+		t.Errorf("not persisted: %+v", rec)
+	}
+
+	again, err := p.DescribeIdentity(bg, gp.DescribeIdentityRequest{Identity: gp.IdentityRef{ID: "migrated-1"}})
+	if err != nil || again.Ref.Handle != got.Ref.Handle || again.DisplayName != got.DisplayName {
+		t.Errorf("second call: %+v %v", again, err)
+	}
+	if n := g.count("GET /user"); n != 1 {
+		t.Errorf("GET /user called %d times, want once", n)
+	}
+}
+
+// A normal identity is described from the stored record, without asking GitLab,
+// exactly as setup returned it.
+func TestDescribeIdentity_NormalUsesTheStoredRecord(t *testing.T) {
+	p, g, st := seededProvider(t)
+	got, err := p.DescribeIdentity(bg, gp.DescribeIdentityRequest{Identity: gp.IdentityRef{ID: fakeIdentityID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := identityOf(st.identities[fakeIdentityID]); got.Ref.Handle != fakeUsername || got.DisplayName != want.DisplayName || got.Kind != gp.IdentityBotUser {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if len(g.calls) != 0 {
+		t.Errorf("GitLab was called: %v", g.calls)
+	}
+}
+
+func TestDescribeIdentity_Unknown(t *testing.T) {
+	p, _, _ := seededProvider(t)
+	_, err := p.DescribeIdentity(bg, gp.DescribeIdentityRequest{Identity: gp.IdentityRef{ID: "nope"}})
+	code(t, err, gp.CodeNotFound)
+	_, err = p.DescribeIdentity(bg, gp.DescribeIdentityRequest{})
+	code(t, err, gp.CodeNotFound)
+}
+
+func TestDescribeIdentity_RevokedToken(t *testing.T) {
+	newFakeGitLab(t)
+	st := newMemStore()
+	p := newGLProvider(st)
+	ref := migratedIdentity(st, "migrated-1", "glpat-revoked")
+	_, err := p.DescribeIdentity(bg, gp.DescribeIdentityRequest{Identity: ref})
+	code(t, err, gp.CodeForbidden)
+	if rec := st.identities["migrated-1"]; rec.Username != "" {
+		t.Errorf("a failed description stored %+v", rec)
+	}
+}

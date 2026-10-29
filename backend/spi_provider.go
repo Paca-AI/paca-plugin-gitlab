@@ -38,6 +38,8 @@ func newGLProvider(store spiStore) *glProvider {
 //   - there is one way to connect (a pasted access token; whether it makes a
 //     bot user depends on the token), so Kinds is left empty and the UI offers
 //     no choice of kind;
+//   - identity_description is implemented: identities carried over from the
+//     community plugin have no handle until first use, and core asks for it;
 //   - review is emulated (one discussion per inline comment, then a summary);
 //   - reactions and access_grants are not implemented: a reaction names only a
 //     comment id, which GitLab cannot address without its merge request, and a
@@ -59,17 +61,18 @@ func (p *glProvider) Describe() gp.Info {
 			Triggers:           []gp.TriggerKind{gp.TriggerMention, gp.TriggerLabel, gp.TriggerReviewRequest, gp.TriggerAssignment, gp.TriggerCIFailure, gp.TriggerOwnCRFeedback, gp.TriggerAutoReview},
 			MultipleIdentities: true,
 
-			ResolveThreads:    true,
-			FileRead:          true,
-			CodeSearch:        true,
-			Labels:            true,
-			ReviewerRequests:  true,
-			Assignees:         true,
-			Merge:             true,
-			RerunChecks:       true,
-			WebhookManagement: true,
-			IdentityDeletion:  true,
-			Branches:          true,
+			ResolveThreads:      true,
+			FileRead:            true,
+			CodeSearch:          true,
+			Labels:              true,
+			ReviewerRequests:    true,
+			Assignees:           true,
+			Merge:               true,
+			RerunChecks:         true,
+			WebhookManagement:   true,
+			IdentityDeletion:    true,
+			IdentityDescription: true,
+			Branches:            true,
 
 			BatchReview:         false,
 			HiddenMarkers:       true,
