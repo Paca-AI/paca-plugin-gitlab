@@ -74,9 +74,18 @@ const (
 	fakeReadToken     = "glpat-read-token"
 	fakeNewToken      = "glpat-new-token"
 	fakeWebhookSecret = "hook-secret-value-123456"
-	fakeUsername      = "paca-bot"
-	fakeIdentityID    = "ident-1"
-	fakeHeadSHA       = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+	// Tokens of the three kinds. The project token was issued for acme/ui, the
+	// group token for acme/frontend; the dev token is a personal one with the
+	// Developer role on acme/ui and the outsider belongs to nothing.
+	fakeProjectToken         = "glpat-project-ui"
+	fakeGroupToken           = "glpat-group-frontend"
+	fakeDevToken             = "glpat-dev"
+	fakeReporterProjectToken = "glpat-project-reporter"
+	fakeOutsiderToken        = "glpat-outsider"
+	fakeUsername             = "paca-bot"
+	fakeIdentityID           = "ident-1"
+	fakeHeadSHA              = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 )
 
 var fakeUsers = map[string]int64{"octocat": 1, "reader": 2, "owner": 3, "lead": 4, "bob": 5, fakeUsername: 77}
@@ -95,6 +104,28 @@ var fakeProjects = []fakeProject{
 	{1, "acme/web", false, 40},
 	{2, "acme/api", true, 20}, // Reporter: may read, not push
 	{3, "acme/platform/infra", false, 30},
+}
+
+// extraProjects exist for the token-reach tests only; the default tokens do not
+// see them, and ListRepositories does not list them.
+var extraProjects = []fakeProject{
+	{4, "acme/ui", false, 0},
+	{5, "acme/frontend/app", false, 0},
+	{6, "acme/frontend/sub/lib", false, 0},
+}
+
+// reachTokens maps each reach-test token to its user name and its role per
+// project id. A project missing from the map is invisible unless public, and a
+// public one is then read with no role at all.
+var reachTokens = map[string]struct {
+	user   string
+	levels map[int64]int
+}{
+	fakeProjectToken:         {"project_4_bot_ab12", map[int64]int{4: 40}},
+	fakeGroupToken:           {"group_9_bot_cd34", map[int64]int{5: 30, 6: 30}},
+	fakeDevToken:             {"dev", map[int64]int{4: 30}},
+	fakeReporterProjectToken: {"project_4_bot_ee56", map[int64]int{4: 20}},
+	fakeOutsiderToken:        {"stranger", map[int64]int{}},
 }
 
 func newFakeGitLab(t *testing.T) *fakeGitLab {
@@ -139,9 +170,11 @@ func (g *fakeGitLab) called(prefix string) int {
 }
 
 func (g *fakeGitLab) project(ref string) *fakeProject {
-	for i := range fakeProjects {
-		if ref == strconv.FormatInt(fakeProjects[i].ID, 10) || ref == fakeProjects[i].Path {
-			return &fakeProjects[i]
+	for _, list := range [][]fakeProject{fakeProjects, extraProjects} {
+		for i := range list {
+			if ref == strconv.FormatInt(list[i].ID, 10) || ref == list[i].Path {
+				return &list[i]
+			}
 		}
 	}
 	return nil
@@ -152,9 +185,14 @@ func projectJSON(p fakeProject) map[string]any {
 	if p.Public {
 		vis = "public"
 	}
+	// A user with no role on a public project gets no project_access, as on GitLab.
+	var access any
+	if p.Level > 0 {
+		access = map[string]any{"access_level": p.Level}
+	}
 	return map[string]any{
 		"id": p.ID, "path_with_namespace": p.Path, "default_branch": "main", "visibility": vis, "description": "d-" + p.Path,
-		"permissions": map[string]any{"project_access": map[string]any{"access_level": p.Level}},
+		"permissions": map[string]any{"project_access": access, "group_access": nil},
 	}
 }
 
@@ -211,7 +249,8 @@ func (g *fakeGitLab) fetch(method, rawURL string, headers map[string]string, bod
 		return &plugin.FetchResponse{Status: f.status, Body: f.body, Headers: f.headers}, nil
 	}
 	tok := headers["PRIVATE-TOKEN"]
-	if tok != fakeToken && tok != fakeNewToken && tok != "glpat-readonly-scope" && tok != fakeReadToken {
+	_, reach := reachTokens[tok]
+	if tok != fakeToken && tok != fakeNewToken && tok != "glpat-readonly-scope" && tok != fakeReadToken && !reach {
 		return resp(401, map[string]string{"message": "401 Unauthorized"})
 	}
 	var payload map[string]any
@@ -225,6 +264,9 @@ func (g *fakeGitLab) route(method string, segs []string, q url.Values, tok strin
 	switch {
 	case method == "GET" && len(segs) == 1 && segs[0] == "user":
 		name := map[string]string{fakeToken: fakeUsername, fakeNewToken: "project_1_bot_ab12", "glpat-readonly-scope": "someone", fakeReadToken: fakeUsername}[tok]
+		if r, ok := reachTokens[tok]; ok {
+			name = r.user
+		}
 		return resp(200, map[string]any{"id": 77, "username": name, "name": "Paca Bot", "bot": strings.Contains(name, "_bot_")})
 	case method == "GET" && len(segs) == 2 && segs[0] == "personal_access_tokens" && segs[1] == "self":
 		if tok == fakeReadToken {
@@ -245,7 +287,30 @@ func (g *fakeGitLab) route(method string, segs []string, q url.Values, tok strin
 		return resp(200, []any{})
 	case method == "GET" && len(segs) == 1 && segs[0] == "projects":
 		return g.listProjects(q)
+	case method == "GET" && len(segs) == 2 && segs[0] == "groups":
+		if tok == fakeGroupToken && segs[1] == "9" {
+			return resp(200, map[string]any{"id": 9, "full_path": "acme/frontend", "path": "frontend"})
+		}
+		return notFound()
+	case method == "GET" && len(segs) == 2 && segs[0] == "projects" && reachTokens[tok].user != "":
+		// The reach-test tokens see projects through their own roles.
+		p := g.project(segs[1])
+		if p == nil {
+			return notFound()
+		}
+		lvl, member := reachTokens[tok].levels[p.ID]
+		if !member && !p.Public {
+			return notFound()
+		}
+		q := *p
+		q.Level = lvl
+		return resp(200, projectJSON(q))
 	case len(segs) >= 2 && segs[0] == "projects":
+		for _, x := range extraProjects {
+			if (segs[1] == x.Path || segs[1] == strconv.FormatInt(x.ID, 10)) && reachTokens[tok].user == "" {
+				return notFound() // the default tokens do not see these projects
+			}
+		}
 		return g.projectAPI(method, segs[1], segs[2:], q, payload)
 	}
 	return notFound()

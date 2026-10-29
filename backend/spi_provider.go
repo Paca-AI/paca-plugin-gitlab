@@ -95,6 +95,14 @@ func (p *glProvider) loadIdentity(identityID string) (identityRecord, error) {
 		}
 		return identityRecord{}, gp.Errorf(gp.CodeInternal, "could not load the GitLab identity")
 	}
+	if rec.Reach.Type == "" {
+		// Stored before token types were recorded: classify from the username
+		// once and save it. A failed save only means doing this again next time.
+		rec.Reach = classifyToken(rec.Username, rec.Bot)
+		if lookupReach(rec.api(), &rec.Reach) {
+			_ = p.store.saveReach(rec.ID, rec.Reach)
+		}
+	}
 	return rec, nil
 }
 
@@ -247,8 +255,57 @@ func parseRepoInput(in string) (host, fullPath string, err error) {
 	return host, s, nil
 }
 
+// covers reports whether the identity's token can reach the repository at the
+// given path, judged from what the token was issued for alone. A token whose
+// path is unknown is given the benefit of the doubt; the membership check after
+// the API call still applies.
+func (r identityRecord) covers(fullPath string) bool {
+	switch r.Reach.Type {
+	case tokenProject:
+		return r.Reach.Path == "" || strings.EqualFold(r.Reach.Path, fullPath)
+	case tokenGroup:
+		return r.Reach.Path == "" || strings.EqualFold(r.Reach.Path, fullPath) ||
+			strings.HasPrefix(strings.ToLower(fullPath), strings.ToLower(r.Reach.Path)+"/")
+	}
+	return true
+}
+
+// coverage says what the connection reaches, for the error shown when no
+// connection covers a repository.
+func (r identityRecord) coverage() string {
+	switch r.Reach.Type {
+	case tokenProject:
+		if r.Reach.Path != "" {
+			return "The connected project token covers only " + r.Reach.Path
+		}
+		return "The connected project token (" + r.Username + ") covers a single other project"
+	case tokenGroup:
+		if r.Reach.Path != "" {
+			return "The connected group token covers only " + r.Reach.Path + " and its subgroups"
+		}
+		return "The connected group token (" + r.Username + ") covers a single other group"
+	}
+	if r.Reach.Type == tokenServiceAccount {
+		return "The connected service account " + r.Username + " is not a member of it with at least the Developer role"
+	}
+	return "The connected personal token of " + r.Username + " is not a member of it with at least the Developer role"
+}
+
+// tooLowRole says why a connection that does reach a repository still cannot be
+// used for it: its role there is below Developer.
+func (r identityRecord) tooLowRole() string {
+	switch r.Reach.Type {
+	case tokenProject:
+		return "The connected project token has less than the Developer role on it"
+	case tokenGroup:
+		return "The connected group token has less than the Developer role on it"
+	}
+	return r.coverage()
+}
+
 // ResolveRepository implements gp.Provider: the first candidate identity that
-// can see the project wins.
+// covers the project, can see it and is a member of it (Developer or above)
+// wins.
 func (p *glProvider) ResolveRepository(_ context.Context, req gp.ResolveRepoRequest) (gp.ResolvedRepository, error) {
 	urlHost, fullPath, err := parseRepoInput(req.PathOrURL)
 	if err != nil {
@@ -265,6 +322,7 @@ func (p *glProvider) ResolveRepository(_ context.Context, req gp.ResolveRepoRequ
 		return gp.ResolvedRepository{}, gp.Errorf(gp.CodeForbidden, "no GitLab identity is available to look this repository up")
 	}
 	var last error
+	var skipped []string // what each connection that did not qualify covers
 	for _, c := range req.Candidates {
 		rec, err := p.loadIdentity(c.ID)
 		if err != nil {
@@ -278,6 +336,10 @@ func (p *glProvider) ResolveRepository(_ context.Context, req gp.ResolveRepoRequ
 		if want != "" && !strings.EqualFold(rec.Host, want) {
 			continue // another host's identity cannot see this project
 		}
+		if !rec.covers(fullPath) {
+			skipped = append(skipped, rec.coverage())
+			continue
+		}
 		var g glProject
 		if err := rec.api().get("/projects/"+pathPart(fullPath), &g); err != nil {
 			if code := gp.AsError(err).Code; code == gp.CodeNotFound || code == gp.CodeForbidden {
@@ -287,11 +349,23 @@ func (p *glProvider) ResolveRepository(_ context.Context, req gp.ResolveRepoRequ
 			return gp.ResolvedRepository{}, err
 		}
 		// A public project answers any token, so being able to read it proves
-		// nothing about being a member; a credential is still minted for it.
+		// nothing about being a member: require a role that can push, which a
+		// project token for another project (or a user outside the project) lacks.
+		if rec.Reach.Type == tokenProject && rec.Reach.ResourceID != g.ID {
+			skipped = append(skipped, rec.coverage())
+			continue
+		}
+		if g.accessLevel() < developerLevel {
+			skipped = append(skipped, rec.tooLowRole())
+			continue
+		}
 		return gp.ResolvedRepository{
 			Repository: repositoryOf(rec.Host, g),
 			Identity:   gp.IdentityRef{ID: rec.ID, Handle: rec.mentionHandle()},
 		}, nil
+	}
+	if len(skipped) > 0 {
+		return gp.ResolvedRepository{}, gp.Errorf(gp.CodeForbidden, "%s. Add a connection for %s, or use a token that is a member of it (a project or group access token, or a service account).", strings.Join(skipped, "; "), fullPath)
 	}
 	if last != nil && gp.AsError(last).Code == gp.CodeForbidden {
 		return gp.ResolvedRepository{}, last
@@ -319,7 +393,7 @@ func (p *glProvider) MintCredential(_ context.Context, req gp.MintRequest) (gp.C
 	if err := rec.api().get(proj, &g); err != nil {
 		return gp.Credential{}, err
 	}
-	if lvl := g.accessLevel(); req.Access == gp.AccessWrite && lvl > 0 && lvl < developerLevel {
+	if lvl := g.accessLevel(); req.Access == gp.AccessWrite && lvl < developerLevel {
 		return gp.Credential{}, gp.Errorf(gp.CodeForbidden, "the identity may not push to this repository")
 	}
 	secret := rec.Token

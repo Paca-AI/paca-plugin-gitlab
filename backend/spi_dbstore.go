@@ -22,7 +22,7 @@ type sqlExecutor interface {
 func newDBStore(p *gitlabPlugin) dbStore { return dbStore{p: p, db: p.db} }
 
 func (s dbStore) loadIdentity(id string) (identityRecord, error) {
-	r, err := s.db.Query(`SELECT id, host, user_id, username, display_name, bot, token_enc, read_token_enc, webhook_secret_enc, expires_at FROM gitlab_identities WHERE id = $1`, id)
+	r, err := s.db.Query(`SELECT id, host, user_id, username, display_name, bot, token_enc, read_token_enc, webhook_secret_enc, expires_at, token_type, resource_id, resource_path FROM gitlab_identities WHERE id = $1`, id)
 	if err != nil {
 		return identityRecord{}, err
 	}
@@ -52,6 +52,7 @@ func (s dbStore) loadIdentity(id string) (identityRecord, error) {
 	rec := identityRecord{
 		ID: sc.str("id"), Host: sc.str("host"), UserID: sc.int64Val("user_id"), Username: sc.str("username"),
 		Name: sc.str("display_name"), Bot: sc.str("bot") == "true", Token: token, ReadToken: readToken, WebhookSecret: secret,
+		Reach: tokenReach{Type: sc.str("token_type"), ResourceID: sc.int64Val("resource_id"), Path: sc.str("resource_path")},
 	}
 	if exp := sc.str("expires_at"); exp != "" {
 		if t, perr := time.Parse(time.RFC3339Nano, exp); perr == nil {
@@ -86,9 +87,9 @@ func (s dbStore) createIdentity(x identityRecord) (string, error) {
 	}
 	now := nowStr()
 	r, err := s.db.Query(`
-		INSERT INTO gitlab_identities (host, user_id, username, display_name, bot, token_enc, read_token_enc, webhook_secret_enc, expires_at, created_by, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'git-provider',$10,$10) RETURNING id`,
-		x.Host, x.UserID, x.Username, x.Name, x.Bot, token, readToken, secret, expires, now)
+		INSERT INTO gitlab_identities (host, user_id, username, display_name, bot, token_enc, read_token_enc, webhook_secret_enc, expires_at, token_type, resource_id, resource_path, created_by, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'git-provider',$13,$13) RETURNING id`,
+		x.Host, x.UserID, x.Username, x.Name, x.Bot, token, readToken, secret, expires, x.Reach.Type, x.Reach.ResourceID, x.Reach.Path, now)
 	if err != nil {
 		return "", err
 	}
@@ -100,6 +101,12 @@ func (s dbStore) createIdentity(x identityRecord) (string, error) {
 
 func (s dbStore) deleteIdentity(id string) error {
 	_, err := s.db.Exec(`DELETE FROM gitlab_identities WHERE id = $1`, id)
+	return err
+}
+
+func (s dbStore) saveReach(id string, r tokenReach) error {
+	_, err := s.db.Exec(`UPDATE gitlab_identities SET token_type = $2, resource_id = $3, resource_path = $4, updated_at = $5 WHERE id = $1`,
+		id, r.Type, r.ResourceID, r.Path, nowStr())
 	return err
 }
 
