@@ -73,6 +73,7 @@ func (p *glProvider) Describe() gp.Info {
 			IdentityDeletion:    true,
 			IdentityDescription: true,
 			Branches:            true,
+			IssueList:           true,
 
 			BatchReview:         false,
 			HiddenMarkers:       true,

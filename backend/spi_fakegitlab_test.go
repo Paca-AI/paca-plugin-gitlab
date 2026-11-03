@@ -578,6 +578,12 @@ func (g *fakeGitLab) noteAPI(kind string, iid int, method string, q url.Values, 
 }
 
 func (g *fakeGitLab) issueAPI(method string, rest []string, payload map[string]any) (*plugin.FetchResponse, error) {
+	if len(rest) == 0 && method == "GET" {
+		// The listing: the one issue the fake knows.
+		return resp(200, []map[string]any{{"iid": 7, "title": "Bug", "description": "It breaks", "state": "opened",
+			"web_url": "https://gitlab.com/acme/web/-/issues/7", "author": map[string]any{"username": "reader"},
+			"labels": []string{"bug"}, "assignees": []map[string]any{{"username": "bob"}}}})
+	}
 	if len(rest) == 0 {
 		return notFound()
 	}
