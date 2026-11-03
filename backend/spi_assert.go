@@ -18,4 +18,5 @@ var (
 	_ gp.WebhookManager    = (*glProvider)(nil)
 	_ gp.IdentityDeleter   = (*glProvider)(nil)
 	_ gp.BranchManager     = (*glProvider)(nil)
+	_ gp.IdentityDescriber = (*glProvider)(nil)
 )

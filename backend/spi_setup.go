@@ -305,6 +305,19 @@ func identityOf(rec identityRecord) gp.Identity {
 	}
 }
 
+// DescribeIdentity implements gp.IdentityDescriber: the identity as
+// CompleteIdentitySetup returned it. An identity carried over from the community
+// plugin has no user yet; loading it asks GitLab once and stores the answer
+// (see completeMigratedIdentity), so core learns the handle and every later
+// call answers from the stored record. A token GitLab rejects reports forbidden.
+func (p *glProvider) DescribeIdentity(_ context.Context, req gp.DescribeIdentityRequest) (gp.Identity, error) {
+	rec, err := p.loadIdentity(req.Identity.ID)
+	if err != nil {
+		return gp.Identity{}, err
+	}
+	return identityOf(rec), nil
+}
+
 // DeleteIdentity implements gp.IdentityDeleter: forget the tokens locally. The
 // access token itself stays valid on GitLab (revoking it needs a higher scope
 // than the token has); the operator revokes it there.
