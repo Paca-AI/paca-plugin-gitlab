@@ -61,16 +61,16 @@ An agent can have its own identity (its own bot user) from the agent's Git tab, 
 
 Enter the instance's host name (no scheme or path, a port is allowed) as the host. Then check both directions of traffic:
 
-**Paca → GitLab (API calls).** Plugin outbound calls are limited to the hosts in `allowedOutboundDomains` (`plugin.json`), HTTPS only, and never to private or internal addresses.
+**Paca → GitLab (API calls).** Plugin outbound calls are limited to the hosts in `allowedOutboundDomains` (`plugin.json`), HTTPS only, and to private addresses only for hosts the operator allows.
 
-1. Add your host to `allowedOutboundDomains` in `plugin.json` (or use `"*"`), for example `["gitlab.com", "gitlab.example.com"]`.
+1. Add your host to `allowedOutboundDomains` in `plugin.json` (or use `"*"`, except for an instance on a private network), for example `["gitlab.com", "gitlab.example.com"]`.
 2. Install or upgrade the plugin with that `plugin.json`: the list is read from the installed manifest, so editing it afterwards has no effect until the plugin is installed again.
 3. Set up the identity.
 
 Two limits come from core, not from this plugin:
 
-- The host must resolve to a public address. A GitLab reachable only on a private network or VPN (`10.x`, `192.168.x`, …) is refused even when listed; see Paca-AI/paca#656 for the proposal to allow it.
-- The certificate must be trusted by the Paca API container. With an internal CA, add it to the container's trust store.
+- A GitLab on a private network or VPN needs its exact host name in `PLUGIN_FETCH_PRIVATE_HOSTS` on the Paca API, as well as in `allowedOutboundDomains` by name (`"*"` does not count). The variable exists from Paca-AI/paca#693 on. An edit to the installed `plugin.json` is lost when the plugin is updated, so redo it after each update. Only `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `fc00::/7` qualify, so Tailscale addresses (`100.64.0.0/10`) stay refused; see Paca-AI/paca#688.
+- The certificate must be trusted by the Paca API container. With an internal CA, add it to the container's trust store, or mount a bundle and point `SSL_CERT_FILE` at it.
 
 **GitLab → Paca (webhooks).** The webhook URL is built from Paca's `PUBLIC_URL`, so it must be reachable from the GitLab instance.
 
