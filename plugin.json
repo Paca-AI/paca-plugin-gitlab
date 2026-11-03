@@ -2,7 +2,7 @@
   "id": "com.paca.gitlab",
   "displayName": "GitLab",
   "description": "GitLab provider for Paca's Git integration: access-token identities, project access, credentials and webhooks.",
-  "version": "0.6.0",
+  "version": "0.1.0",
   "minCoreVersion": "v0.20.0",
   "capabilities": ["git-provider"],
   "permissions": ["db.read", "db.write"],
