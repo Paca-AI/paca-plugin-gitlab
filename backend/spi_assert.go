@@ -19,4 +19,5 @@ var (
 	_ gp.IdentityDeleter   = (*glProvider)(nil)
 	_ gp.BranchManager     = (*glProvider)(nil)
 	_ gp.IdentityDescriber = (*glProvider)(nil)
+	_ gp.IssueLister       = (*glProvider)(nil)
 )

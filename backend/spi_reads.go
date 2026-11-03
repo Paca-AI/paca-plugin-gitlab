@@ -460,6 +460,29 @@ func (p *glProvider) ListComments(_ context.Context, req gp.ListCommentsRequest)
 	return out, nil
 }
 
+type glIssue struct {
+	IID         int      `json:"iid"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	State       string   `json:"state"` // opened | closed
+	WebURL      string   `json:"web_url"`
+	Author      glRef    `json:"author"`
+	Labels      []string `json:"labels"`
+	Assignees   []glRef  `json:"assignees"`
+}
+
+func (is glIssue) toIssue() gp.Issue {
+	state := "open"
+	if is.State == "closed" {
+		state = "closed"
+	}
+	out := gp.Issue{Number: strconv.Itoa(is.IID), Title: is.Title, Body: is.Description, State: state, Author: is.Author.Username, URL: is.WebURL, Labels: is.Labels}
+	for _, a := range is.Assignees {
+		out.Assignees = append(out.Assignees, a.Username)
+	}
+	return out
+}
+
 // GetIssue implements gp.Provider.
 func (p *glProvider) GetIssue(_ context.Context, req gp.IssueRequest) (gp.Issue, error) {
 	num, err := number(req.Number)
@@ -470,26 +493,40 @@ func (p *glProvider) GetIssue(_ context.Context, req gp.IssueRequest) (gp.Issue,
 	if err != nil {
 		return gp.Issue{}, err
 	}
-	var is struct {
-		IID         int      `json:"iid"`
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		State       string   `json:"state"`
-		WebURL      string   `json:"web_url"`
-		Author      glRef    `json:"author"`
-		Labels      []string `json:"labels"`
-		Assignees   []glRef  `json:"assignees"`
-	}
+	var is glIssue
 	if err := api.get(proj+"/issues/"+num, &is); err != nil {
 		return gp.Issue{}, err
 	}
-	state := "open"
-	if is.State == "closed" {
-		state = "closed"
+	return is.toIssue(), nil
+}
+
+// ListIssues implements gp.IssueLister. GitLab's issues endpoint returns issues
+// only (merge requests have their own), newest first, so a page needs no
+// filtering and the cursor follows the raw page size.
+func (p *glProvider) ListIssues(_ context.Context, req gp.ListIssuesRequest) (gp.IssuePage, error) {
+	state := "opened"
+	switch req.State {
+	case "", "open":
+	case "closed", "all":
+		state = req.State
+	default:
+		return gp.IssuePage{}, gp.Errorf(gp.CodeValidation, "invalid issue state")
 	}
-	out := gp.Issue{Number: strconv.Itoa(is.IID), Title: is.Title, Body: is.Description, State: state, Author: is.Author.Username, URL: is.WebURL, Labels: is.Labels}
-	for _, a := range is.Assignees {
-		out.Assignees = append(out.Assignees, a.Username)
+	pg, err := page(req.Cursor)
+	if err != nil {
+		return gp.IssuePage{}, err
+	}
+	api, proj, err := p.apiFor(req.Target)
+	if err != nil {
+		return gp.IssuePage{}, err
+	}
+	var issues []glIssue
+	if err := api.get(paged(proj+"/issues?scope=all&order_by=created_at&sort=desc&state="+state, pg), &issues); err != nil {
+		return gp.IssuePage{}, err
+	}
+	out := gp.IssuePage{Items: make([]gp.Issue, 0, len(issues)), NextCursor: nextPage(len(issues), pg)}
+	for _, is := range issues {
+		out.Items = append(out.Items, is.toIssue())
 	}
 	return out, nil
 }
